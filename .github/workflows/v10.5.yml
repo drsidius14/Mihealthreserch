@@ -15,7 +15,8 @@ concurrency:
 jobs:
   build:
     name: Original bit-parity base + V8 repaired DEX + safe Russian overlay
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -33,24 +34,30 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools build-tools;35.0.0'
+          packages: |
+            platform-tools
+            build-tools;35.0.0
 
-      - name: Fetch exact original and exact V8
+      - name: Fetch and verify exact original + exact V8
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p work input
-          cp input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk work/original.apk
-          git fetch --no-tags origin v10-build
+          mkdir -p work
+          git fetch --no-tags origin v10-build:refs/remotes/origin/v10-build
+          git show origin/v10-build:input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk > work/original.apk
           git show origin/v10-build:input/XiaomiHealthResearch_1.4.6_RU_V8.apk > work/v8.apk
+          echo '9e872f2d75e4ec1d509216d8caa998c2957d797c57b8ecc1ed8c92054f53c4bc  work/original.apk' | sha256sum -c -
+          echo 'c3bd649826febc1e40895e4f9e7d30b3a7b2b27b989cd5917cb560e72de3c5b0  work/v8.apk' | sha256sum -c -
+          unzip -t work/original.apk >/dev/null
+          unzip -t work/v8.apk >/dev/null
           python3 repair/v10_5_analyze.py work/original.apk work/v8.apk work/analysis.json
 
       - name: Build V10.5
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p work/apktool work/localized
-          curl -fsSL -o work/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
+          mkdir -p work/apktool work/localized output
+          curl --retry 3 --retry-all-errors --fail --silent --show-error -o work/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
           java -jar work/apktool.jar d -f --use-aapt2 -o work/apktool/original work/original.apk
           python3 repair/v10_5_localize.py work/apktool/original work/translation_cache.json
           java -jar work/apktool.jar b --use-aapt2 work/apktool/original -o work/localized/compiled.apk
@@ -62,7 +69,7 @@ jobs:
             -alias release -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Mihealthreserch V10.5,O=Mihealthreserch,C=RU" >/dev/null 2>&1
           "$BT/apksigner" sign \
-            --ks work/release.jks --ks-pass pass:changeit --key-pass pass:changeit \
+            --ks work/release.jks --ks-pass pass:changeit --key-pass changeit \
             --ks-key-alias release \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
             --out output.apk work/aligned.apk
@@ -72,6 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/35.0.0"
+          "$BT/zipalign" -c -P 4 -v 4 output.apk
           "$BT/apksigner" verify --verbose --print-certs output.apk
           unzip -t output.apk >/dev/null
           "$BT/aapt2" dump badging output.apk > work/badging.txt
