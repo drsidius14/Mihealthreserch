@@ -1,0 +1,5 @@
+Одна команда для Termux после скачивания XiaomiHealthResearch_V11_SOURCE.zip в Download:
+
+cd ~/Mihealthreserch && test -z "$(git status --porcelain)" || { echo 'Рабочее дерево не чистое — сначала сохрани изменения'; exit 1; } && git fetch --no-tags origin v10.7-build:refs/remotes/origin/v10.7-build && git checkout -B v11-build origin/v10.7-build && unzip -o "$HOME/storage/downloads/XiaomiHealthResearch_V11_SOURCE.zip" -d . && git add .github/workflows/v11.yml repair/v11_*.py repair/v11_translations.json repair/reference_local_v10_7.json V11_README.txt V11_TERMUX_COMMAND.txt && git commit -m "Build V11 with byte-level audit and Russian localization" && git push -u origin v11-build
+
+Что делает команда: берёт существующую ветку V10.7 как базу, заменяет только файлы сборки V11 и запускает GitHub Actions отправкой ветки v11-build. APK появится только после прохождения сборки и проверок GitHub Actions.
