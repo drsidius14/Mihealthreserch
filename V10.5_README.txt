@@ -1,0 +1,8 @@
+V10.5 build package
+
+Design:
+- Original Xiaomi Health Research 1.4.6 APK is the functional/resource base.
+- V8 classes.dex is imported byte-for-byte; classes2.dex, manifest, assets and native libraries remain the original bytes.
+- Russian localization is added as standard Android values-ru overlays through Apktool/AAPT2, without rewriting the original default strings.
+- Only classes.dex and resources.arsc are intentionally changed in the final APK (plus new signing metadata).
+- No Android emulator / extended functional crawl is part of this workflow.

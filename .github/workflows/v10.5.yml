@@ -1,0 +1,91 @@
+name: Xiaomi Health Research V10.5
+
+on:
+  push:
+    branches: [v10.5-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mihealthreserch-v10.5-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Original bit-parity base + V8 repaired DEX + safe Russian overlay
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platform-tools" "build-tools;35.0.0" >/dev/null
+
+      - name: Fetch exact original and exact V8
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work input
+          cp input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk work/original.apk
+          git fetch --no-tags origin v10-build
+          git show origin/v10-build:input/XiaomiHealthResearch_1.4.6_RU_V8.apk > work/v8.apk
+          python3 repair/v10_5_analyze.py work/original.apk work/v8.apk work/analysis.json
+
+      - name: Build V10.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/apktool work/localized
+          curl -fsSL -o work/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
+          java -jar work/apktool.jar d -f --use-aapt2 -o work/apktool/original work/original.apk
+          python3 repair/v10_5_localize.py work/apktool/original work/translation_cache.json
+          java -jar work/apktool.jar b --use-aapt2 work/apktool/original -o work/localized/compiled.apk
+          python3 repair/v10_5_package.py work/original.apk work/v8.apk work/localized/compiled.apk work/unsigned.apk
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          "$BT/zipalign" -f -P 4 -v 4 work/unsigned.apk work/aligned.apk >/dev/null
+          keytool -genkeypair -v \
+            -keystore work/release.jks -storepass changeit -keypass changeit \
+            -alias release -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Mihealthreserch V10.5,O=Mihealthreserch,C=RU" >/dev/null 2>&1
+          "$BT/apksigner" sign \
+            --ks work/release.jks --ks-pass pass:changeit --key-pass pass:changeit \
+            --ks-key-alias release \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out output.apk work/aligned.apk
+
+      - name: Verify V10.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          "$BT/apksigner" verify --verbose --print-certs output.apk
+          unzip -t output.apk >/dev/null
+          "$BT/aapt2" dump badging output.apk > work/badging.txt
+          python3 repair/v10_5_verify.py work/original.apk work/v8.apk output.apk work/analysis.json
+          sha256sum output.apk > V10.5.sha256
+          cp output.apk XiaomiHealthResearch_1.4.6_RU_V10.5.apk
+
+      - name: Upload V10.5 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XiaomiHealthResearch_V10.5
+          path: |
+            XiaomiHealthResearch_1.4.6_RU_V10.5.apk
+            V10.5.sha256
+            work/analysis.json
