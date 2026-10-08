@@ -1,49 +1,107 @@
 name: Finalize Xiaomi Health Research
 
 on:
-  workflow_dispatch:
   push:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apk-finalize-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   finalize:
-    runs-on: ubuntu-latest
+    name: Align, sign and verify APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install build tools
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Final align
+      - name: Prepare Android SDK
+        shell: bash
         run: |
-          mkdir -p work output
-          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 \
+          set -euo pipefail
+          : "${ANDROID_HOME:=${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_HOME
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1 || true)"
+          fi
+          test -n "$SDKMANAGER"
+          echo "SDKMANAGER=$SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+          test -x "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
+
+      - name: Preflight candidate APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=input/xiaomi_health_research_ru_unsigned_candidate.apk
+          test -f "$APK"
+          test -s "$APK"
+
+          mkdir -p output work
+          unzip -t "$APK" >/dev/null
+
+          if unzip -l "$APK" | grep -Eq 'META-INF/(MANIFEST\.MF|[^/]+\.SF|[^/]+\.RSA|[^/]+\.DSA)$'; then
+            echo "ERROR: candidate still contains legacy META-INF signature files."
+            exit 1
+          fi
+
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" > output/source-badging.txt
+          grep -q '^package:' output/source-badging.txt
+
+          sha256sum "$APK" | tee output/source-SHA256SUM.txt
+
+      - name: Align APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -P 4 -v 4 \
             input/xiaomi_health_research_ru_unsigned_candidate.apk \
             work/aligned.apk
+
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 4 -v 4 work/aligned.apk
 
-      - name: Generate temporary signing key
+      - name: Generate isolated test signing key
+        shell: bash
         run: |
+          set -euo pipefail
           keytool -genkeypair -v \
             -keystore work/test-release.jks \
             -storepass changeit \
             -keypass changeit \
             -alias release \
-            -keyalg RSA -keysize 2048 -validity 10000 \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
             -dname "CN=Mihealthreserch Test,O=Mihealthreserch,C=RU"
 
-      - name: Sign V1 V2 V3
+      - name: Sign APK V1 V2 V3
+        shell: bash
         run: |
+          set -euo pipefail
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
             --ks work/test-release.jks \
             --ks-pass pass:changeit \
@@ -55,25 +113,47 @@ jobs:
             --out output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk \
             work/aligned.apk
 
-      - name: Verify final APK
+      - name: Verify signature, alignment and package metadata
+        shell: bash
         run: |
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs \
-            output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk
-          sha256sum output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk | tee output/SHA256SUM.txt
+          set -euo pipefail
+          FINAL=output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk
+          BT="$ANDROID_HOME/build-tools/35.0.0"
 
-      - name: Upload final APK
+          "$BT/zipalign" -c -P 4 -v 4 "$FINAL"
+          "$BT/apksigner" verify --verbose --print-certs "$FINAL" | tee output/apksigner-verify.txt
+
+          grep -q 'Verified using v1 scheme (JAR signing): true' output/apksigner-verify.txt
+          grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' output/apksigner-verify.txt
+          grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true' output/apksigner-verify.txt
+
+          "$BT/aapt2" dump badging "$FINAL" > output/final-badging.txt
+          grep -q '^package:' output/final-badging.txt
+
+          unzip -t "$FINAL" >/dev/null
+          sha256sum "$FINAL" | tee output/SHA256SUM.txt
+
+      - name: Upload finalized APK and verification report
         uses: actions/upload-artifact@v4
         with:
           name: XiaomiHealthResearch-1.4.6-RU-FINAL
+          if-no-files-found: error
           path: |
             output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk
             output/SHA256SUM.txt
+            output/apksigner-verify.txt
+            output/source-SHA256SUM.txt
+            output/source-badging.txt
+            output/final-badging.txt
 
   emulator:
+    name: Fresh Android emulator smoke test
     needs: finalize
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
     steps:
-      - name: Download final APK
+      - name: Download finalized APK
         uses: actions/download-artifact@v4
         with:
           name: XiaomiHealthResearch-1.4.6-RU-FINAL
@@ -88,18 +168,34 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim
           disable-animations: true
           script: |
-            PKG=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
-            test -n "$PKG"
-            echo "PACKAGE=$PKG"
-            adb install -r output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk
-            adb shell pm path "$PKG"
-            adb shell monkey -p "$PKG" 1
-            sleep 5
-            adb logcat -d -t 300 > emulator-logcat.txt
+            set -e
+            APK=output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk
+            BT="$ANDROID_HOME/build-tools/35.0.0"
 
-      - name: Upload emulator log
+            PKG=$("$BT/aapt2" dump badging "$APK" | sed -n "s/^package: name='\([^']*\)'.*/\1/p" | head -n 1)
+            test -n "$PKG"
+            echo "PACKAGE=$PKG" | tee emulator-package.txt
+
+            adb wait-for-device
+            adb shell getprop ro.build.version.sdk
+            adb install -r "$APK"
+
+            adb shell pm path "$PKG"
+            adb shell dumpsys package "$PKG" > emulator-package-dumpsys.txt
+            adb shell monkey -p "$PKG" 1 > emulator-launch.txt 2>&1 || true
+            sleep 8
+            adb logcat -d -t 500 > emulator-logcat.txt
+
+            echo "Smoke test completed for $PKG"
+
+      - name: Upload emulator diagnostics
         uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: emulator-logcat
-          path: emulator-logcat.txt
+          name: emulator-diagnostics
           if-no-files-found: ignore
+          path: |
+            emulator-package.txt
+            emulator-package-dumpsys.txt
+            emulator-launch.txt
+            emulator-logcat.txt
