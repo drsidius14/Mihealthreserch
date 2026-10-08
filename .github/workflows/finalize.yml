@@ -1,4 +1,4 @@
-name: Build Xiaomi Health Research APK
+name: Xiaomi Health Research V8
 
 on:
   push:
@@ -9,22 +9,27 @@ permissions:
   contents: read
 
 concurrency:
-  group: xiaomi-health-research-${{ github.ref }}
+  group: mihealthreserch-v8-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Repair, align, sign and verify APK
+  finalize:
+    name: Repair V5, align, sign and verify
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Prepare Android SDK / build-tools
+      - name: Prepare Android SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -34,45 +39,54 @@ jobs:
           test -n "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
           "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-          BT="$ANDROID_HOME/build-tools/35.0.0"
-          test -x "$BT/zipalign"
-          test -x "$BT/apksigner"
-          test -x "$BT/aapt2"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
 
-      - name: Prepare candidate
+      - name: Preflight exact V5 source
         shell: bash
         run: |
           set -euo pipefail
           APK=input/xiaomi_health_research_ru_candidate_v5.apk
           test -s "$APK"
-          mkdir -p work output
+          echo "70965b835b4574e77256b98953ff4374a29e58d74a5a5dfc4709d2dd19c30974  $APK" | sha256sum -c -
           unzip -t "$APK" >/dev/null
-          sha256sum "$APK" | tee output/source-SHA256SUM.txt
-          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | tee output/source-badging.txt
+          if unzip -l "$APK" | grep -Eq 'META-INF/(MANIFEST\.MF|[^/]+\.(SF|RSA|DSA))$'; then
+            echo "V5 source contains existing JAR signature metadata; it will be removed before re-signing."
+          fi
 
-      - name: Repair DEX deterministically
+      - name: Deep DEX repair
         shell: bash
         run: |
           set -euo pipefail
-          cp input/xiaomi_health_research_ru_candidate_v5.apk work/repaired-unsigned.apk
-          python3 repair/repair_dex.py work/repaired-unsigned.apk
-          unzip -t work/repaired-unsigned.apk >/dev/null
-          if unzip -l work/repaired-unsigned.apk | grep -Eq 'META-INF/(MANIFEST\.MF|[^/]+\.(SF|RSA|DSA))$'; then
-            echo 'ERROR: legacy JAR signing metadata remains after repair'
-            exit 1
-          fi
-          sha256sum work/repaired-unsigned.apk | tee output/repaired-unsigned-SHA256SUM.txt
+          mkdir -p work output
+          cp input/xiaomi_health_research_ru_candidate_v5.apk work/v8-working.apk
+          python3 repair/repair_v8.py work/v8-working.apk | tee output/repair-report.txt
+          python3 - <<'PY'
+          import sys, zipfile
+          sys.path.insert(0, 'repair')
+          from repair_v8 import parse_dex, dex_integrity_ok, validate_order, TARGET, EXPECTED_NEW_INDEX
+          with zipfile.ZipFile('work/v8-working.apk') as z:
+              d=z.read('classes.dex')
+              assert dex_integrity_ok(d)
+              s=validate_order(d)
+              assert s[EXPECTED_NEW_INDEX]==TARGET
+              assert s.count(TARGET)==1
+              d2=z.read('classes2.dex')
+              assert dex_integrity_ok(d2)
+              validate_order(d2)
+          print('DEX_STRUCTURE_VERIFY=PASS')
+          PY
 
-      - name: Zipalign
+      - name: Align APK
         shell: bash
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/35.0.0"
-          "$BT/zipalign" -f -P 4 -v 4 work/repaired-unsigned.apk work/aligned.apk
+          "$BT/zipalign" -f -P 4 -v 4 work/v8-working.apk work/aligned.apk
           "$BT/zipalign" -c -P 4 -v 4 work/aligned.apk
 
-      - name: Generate isolated signing key
+      - name: Generate isolated test signing key
         shell: bash
         run: |
           set -euo pipefail
@@ -80,57 +94,57 @@ jobs:
             -keystore work/test-release.jks \
             -storepass changeit -keypass changeit \
             -alias release -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname 'CN=Mihealthreserch Test,O=Mihealthreserch,C=RU'
+            -dname "CN=Mihealthreserch Test,O=Mihealthreserch,C=RU"
 
-      - name: Sign V1 V2 V3
+      - name: Sign APK V1 V2 V3
         shell: bash
         run: |
           set -euo pipefail
-          BT="$ANDROID_HOME/build-tools/35.0.0"
-          "$BT/apksigner" sign \
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
             --ks work/test-release.jks \
             --ks-pass pass:changeit --key-pass pass:changeit \
             --ks-key-alias release \
             --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-            --out output/XiaomiHealthResearch_1.4.6_RU_GITHUB.apk \
+            --out output/XiaomiHealthResearch_1.4.6_RU_V8.apk \
             work/aligned.apk
 
-      - name: Final verification
+      - name: Final package verification
         shell: bash
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/35.0.0"
-          FINAL=output/XiaomiHealthResearch_1.4.6_RU_GITHUB.apk
+          FINAL=output/XiaomiHealthResearch_1.4.6_RU_V8.apk
           "$BT/zipalign" -c -P 4 -v 4 "$FINAL"
           "$BT/apksigner" verify --verbose --print-certs "$FINAL" | tee output/apksigner-verify.txt
           grep -q 'Verified using v1 scheme (JAR signing): true' output/apksigner-verify.txt
           grep -q 'Verified using v2 scheme (APK Signature Scheme v2): true' output/apksigner-verify.txt
           grep -q 'Verified using v3 scheme (APK Signature Scheme v3): true' output/apksigner-verify.txt
-          "$BT/aapt2" dump badging "$FINAL" | tee output/final-badging.txt
+          "$BT/aapt2" dump badging "$FINAL" > output/final-badging.txt
+          python3 repair/verify_final.py "$FINAL" | tee output/final-dex-verify.txt
           unzip -t "$FINAL" >/dev/null
           sha256sum "$FINAL" | tee output/SHA256SUM.txt
 
-      - name: Upload APK and verification
+      - name: Upload V8 APK
         uses: actions/upload-artifact@v4
         with:
-          name: XiaomiHealthResearch-1.4.6-RU-GITHUB
+          name: XiaomiHealthResearch-1.4.6-RU-V8
           if-no-files-found: error
           path: |
-            output/XiaomiHealthResearch_1.4.6_RU_GITHUB.apk
+            output/XiaomiHealthResearch_1.4.6_RU_V8.apk
             output/*.txt
 
   emulator:
-    name: ARM64 ADB emulator smoke test
-    needs: build
+    name: ARM64 Android 15 launch smoke test
+    needs: finalize
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: XiaomiHealthResearch-1.4.6-RU-GITHUB
+          name: XiaomiHealthResearch-1.4.6-RU-V8
           path: output
 
-      - name: Android ARM64 emulator install / launch / logcat
+      - name: ARM64 emulator smoke test
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -141,15 +155,19 @@ jobs:
           emulator-boot-timeout: 900
           script: |
             set -uo pipefail
-            APK=output/XiaomiHealthResearch_1.4.6_RU_GITHUB.apk
+            APK=output/XiaomiHealthResearch_1.4.6_RU_V8.apk
             PKG=$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" output/final-badging.txt | head -n 1)
             ACT=$(sed -n "s/^launchable-activity: name='\([^']*\)'.*/\1/p" output/final-badging.txt | head -n 1)
             test -n "$PKG"
+            echo "PACKAGE=$PKG" | tee emulator-result.txt
+            echo "ACTIVITY=$ACT" | tee -a emulator-result.txt
             adb wait-for-device
             adb shell getprop ro.build.version.sdk | tee emulator-sdk.txt
             adb shell getprop ro.product.cpu.abilist | tee emulator-abi.txt
+            adb logcat -c
+            adb shell pm uninstall "$PKG" >/dev/null 2>&1 || true
             set +e
-            adb install -r "$APK" > emulator-install.txt 2>&1
+            adb install "$APK" > emulator-install.txt 2>&1
             INSTALL_RC=$?
             set -e
             cat emulator-install.txt
@@ -165,21 +183,26 @@ jobs:
             set -e
             cat emulator-launch.txt
             sleep 10
-            adb logcat -d -t 3000 > emulator-logcat.txt || true
-            echo "INSTALL_RC=$INSTALL_RC" | tee emulator-result.txt
+            adb shell pidof "$PKG" > emulator-pid.txt 2>&1 || true
+            adb logcat -d -t 2500 > emulator-logcat.txt || true
+            echo "INSTALL_RC=$INSTALL_RC" | tee -a emulator-result.txt
             echo "LAUNCH_RC=$LAUNCH_RC" | tee -a emulator-result.txt
-            if grep -Eq 'FATAL EXCEPTION|Process: '"$PKG"'.*has died' emulator-logcat.txt; then
-              echo 'APP_CRASH_DETECTED=true' | tee -a emulator-result.txt
+            if grep -Eq 'FATAL EXCEPTION|AndroidRuntime: FATAL|Fatal signal|Process: ' emulator-logcat.txt; then
+              echo "APP_CRASH_DETECTED=true" | tee -a emulator-result.txt
+              exit 1
+            fi
+            if [ -z "$(tr -d '[:space:]' < emulator-pid.txt 2>/dev/null)" ]; then
+              echo "APP_DIED_AFTER_LAUNCH=true" | tee -a emulator-result.txt
               exit 1
             fi
             test "$LAUNCH_RC" -eq 0
-            echo 'APP_CRASH_DETECTED=false' | tee -a emulator-result.txt
-            echo 'SMOKE_TEST=PASS' | tee -a emulator-result.txt
+            echo "APP_CRASH_DETECTED=false" | tee -a emulator-result.txt
+            echo "SMOKE_TEST=PASS" | tee -a emulator-result.txt
 
       - name: Upload emulator diagnostics
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: emulator-diagnostics
+          name: XiaomiHealthResearch-V8-emulator-diagnostics
           if-no-files-found: ignore
           path: emulator-*.txt
