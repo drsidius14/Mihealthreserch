@@ -1,0 +1,105 @@
+name: Finalize Xiaomi Health Research
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build tools
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Final align
+        run: |
+          mkdir -p work output
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 \
+            input/xiaomi_health_research_ru_unsigned_candidate.apk \
+            work/aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 4 -v 4 work/aligned.apk
+
+      - name: Generate temporary signing key
+        run: |
+          keytool -genkeypair -v \
+            -keystore work/test-release.jks \
+            -storepass changeit \
+            -keypass changeit \
+            -alias release \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Mihealthreserch Test,O=Mihealthreserch,C=RU"
+
+      - name: Sign V1 V2 V3
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks work/test-release.jks \
+            --ks-pass pass:changeit \
+            --key-pass pass:changeit \
+            --ks-key-alias release \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk \
+            work/aligned.apk
+
+      - name: Verify final APK
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs \
+            output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk
+          sha256sum output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk | tee output/SHA256SUM.txt
+
+      - name: Upload final APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: XiaomiHealthResearch-1.4.6-RU-FINAL
+          path: |
+            output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk
+            output/SHA256SUM.txt
+
+  emulator:
+    needs: finalize
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download final APK
+        uses: actions/download-artifact@v4
+        with:
+          name: XiaomiHealthResearch-1.4.6-RU-FINAL
+          path: output
+
+      - name: Android emulator smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -no-audio -no-boot-anim
+          disable-animations: true
+          script: |
+            PKG=$("$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+            test -n "$PKG"
+            echo "PACKAGE=$PKG"
+            adb install -r output/XiaomiHealthResearch_1.4.6_RU_FINAL.apk
+            adb shell pm path "$PKG"
+            adb shell monkey -p "$PKG" 1
+            sleep 5
+            adb logcat -d -t 300 > emulator-logcat.txt
+
+      - name: Upload emulator log
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-logcat
+          path: emulator-logcat.txt
+          if-no-files-found: ignore
