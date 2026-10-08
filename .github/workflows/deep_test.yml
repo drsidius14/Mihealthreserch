@@ -1,0 +1,251 @@
+name: Xiaomi Health Research V8 Deep Functional Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deep-test:
+    name: Deep UI, Xiaomi and crash investigation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_HOME ANDROID_SDK_ROOT="$ANDROID_HOME"
+          SDKMANAGER="$(command -v sdkmanager || find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+
+      - name: Build V8 test APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work output
+          cp input/xiaomi_health_research_ru_candidate_v5.apk work/v8.apk
+          python3 repair/repair_v8.py work/v8.apk
+
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -P 4 -v 4 \
+            work/v8.apk work/aligned.apk >/dev/null
+
+          keytool -genkeypair -v \
+            -keystore work/test.jks \
+            -storepass changeit -keypass changeit \
+            -alias release -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Mihealthreserch Test,O=Mihealthreserch,C=RU" >/dev/null
+
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign \
+            --ks work/test.jks \
+            --ks-pass pass:changeit \
+            --key-pass pass:changeit \
+            --ks-key-alias release \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out output/XiaomiHealthResearch_V8_DEEP.apk \
+            work/aligned.apk
+
+      - name: ARM64 Android 15 deep functional test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: arm64-v8a
+          profile: pixel_2
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot
+          disable-animations: true
+          emulator-boot-timeout: 900
+
+          script: |
+            set -uo pipefail
+
+            APK=output/XiaomiHealthResearch_V8_DEEP.apk
+            mkdir -p deep-report deep-report/screens
+
+            echo "=== DEVICE ===" | tee deep-report/device.txt
+            adb shell getprop ro.build.version.release | tee -a deep-report/device.txt
+            adb shell getprop ro.build.version.sdk | tee -a deep-report/device.txt
+            adb shell getprop ro.product.cpu.abilist | tee -a deep-report/device.txt
+
+            adb logcat -c
+
+            PKG=$(python3 - <<'PY'
+            import zipfile,re
+            a='output/XiaomiHealthResearch_V8_DEEP.apk'
+            with zipfile.ZipFile(a) as z:
+                x=z.read('AndroidManifest.xml')
+            # fallback: package is known from the application
+            print('com.mi.research')
+            PY
+            )
+
+            echo "PACKAGE=$PKG" | tee deep-report/summary.txt
+
+            adb shell pm uninstall "$PKG" >/dev/null 2>&1 || true
+
+            echo "=== INSTALL ===" | tee deep-report/install.txt
+            adb install "$APK" 2>&1 | tee -a deep-report/install.txt
+            INSTALL_RC=${PIPESTATUS[0]}
+
+            echo "INSTALL_RC=$INSTALL_RC" | tee -a deep-report/summary.txt
+
+            if [ "$INSTALL_RC" -ne 0 ]; then
+              adb logcat -d > deep-report/logcat.txt
+              exit 1
+            fi
+
+            echo "=== INSTALLED XIAOMI PACKAGES ===" | tee deep-report/xiaomi-packages.txt
+            adb shell pm list packages | grep -Ei 'miui|xiaomi|mifitness|mifit|health|wear|watch' \
+              | tee -a deep-report/xiaomi-packages.txt || true
+
+            echo "=== START ===" | tee deep-report/launch.txt
+            adb shell monkey -p "$PKG" 1 2>&1 | tee -a deep-report/launch.txt
+            sleep 5
+
+            adb shell dumpsys activity activities > deep-report/activity-initial.txt
+            adb shell dumpsys window windows > deep-report/windows-initial.txt
+
+            # Initial screenshot
+            adb exec-out screencap -p > deep-report/screens/00_launch.png
+
+            # UI exploration loop.
+            # Finds clickable/long-clickable/checkable nodes from the current
+            # accessibility hierarchy and taps new coordinates.
+            for ROUND in $(seq 1 18); do
+              echo "=== UI ROUND $ROUND ===" | tee -a deep-report/ui-exploration.txt
+
+              adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
+              adb shell cat /sdcard/window.xml > "deep-report/ui-${ROUND}.xml" 2>/dev/null || true
+
+              python3 - "$ROUND" <<'PY'
+            import re,sys
+            n=int(sys.argv[1])
+            p=f"deep-report/ui-{n}.xml"
+            try:
+                s=open(p,encoding="utf-8",errors="ignore").read()
+            except:
+                raise SystemExit(0)
+
+            nodes=re.findall(r'<node\b[^>]*?(?:clickable="true"|long-clickable="true"|checkable="true")[^>]*>',s)
+
+            out=[]
+            for x in nodes:
+                m=re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"',x)
+                if not m: continue
+                x1,y1,x2,y2=map(int,m.groups())
+                if x2<=x1 or y2<=y1: continue
+                cx=(x1+x2)//2
+                cy=(y1+y2)//2
+                text=re.search(r'text="([^"]*)"',x)
+                desc=re.search(r'content-desc="([^"]*)"',x)
+                label=(text.group(1) if text else '') or (desc.group(1) if desc else '')
+                out.append((cx,cy,label,x[:500]))
+
+            # Avoid system/navigation bars.
+            out=[x for x in out if x[1] > 80 and x[1] < 2100]
+
+            # Keep a limited number per round.
+            for i,(cx,cy,label,raw) in enumerate(out[:6]):
+                print(f"{cx} {cy} {label}")
+            PY
+              > "deep-report/ui-${ROUND}-targets.txt"
+
+              TARGET=$(head -n 1 "deep-report/ui-${ROUND}-targets.txt" 2>/dev/null || true)
+
+              if [ -n "$TARGET" ]; then
+                X=$(echo "$TARGET" | awk '{print $1}')
+                Y=$(echo "$TARGET" | awk '{print $2}')
+                LABEL=$(echo "$TARGET" | cut -d' ' -f3-)
+
+                echo "CLICK $X,$Y [$LABEL]" | tee -a deep-report/ui-exploration.txt
+                adb shell input tap "$X" "$Y" || true
+                sleep 2
+
+                adb exec-out screencap -p > "deep-report/screens/${ROUND}_after.png"
+                adb shell dumpsys activity activities > "deep-report/activity-${ROUND}.txt"
+                adb shell dumpsys window windows > "deep-report/windows-${ROUND}.txt"
+              else
+                echo "No clickable target found" | tee -a deep-report/ui-exploration.txt
+                break
+              fi
+            done
+
+            # Explicit Back navigation tests.
+            for N in 1 2 3 4 5; do
+              adb shell input keyevent 4
+              sleep 1
+            done
+
+            echo "=== INTENT / XIAOMI TRACE ===" | tee deep-report/xiaomi-trace.txt
+            adb logcat -d | grep -Ei \
+              'mi fitness|mifitness|mifit|xiaomi|miui|wear|watch|bluetooth|intent|activitynotfound|securityexception|classnotfound|resolveinfo' \
+              | tail -n 500 | tee -a deep-report/xiaomi-trace.txt || true
+
+            echo "=== FINAL ACTIVITY ===" | tee deep-report/final-state.txt
+            adb shell dumpsys activity activities | tail -n 250 | tee -a deep-report/final-state.txt
+
+            echo "=== FINAL UI ===" | tee -a deep-report/final-state.txt
+            adb shell uiautomator dump /sdcard/final.xml >/dev/null 2>&1 || true
+            adb shell cat /sdcard/final.xml > deep-report/final-ui.xml 2>/dev/null || true
+
+            echo "=== CRASH / ANR ANALYSIS ===" | tee deep-report/crash-analysis.txt
+            adb logcat -d > deep-report/logcat.txt
+
+            grep -Ein \
+              'FATAL EXCEPTION|AndroidRuntime|Fatal signal|ANR in|am_anr|SecurityException|ClassNotFoundException|NoSuchMethod|NullPointerException|ActivityNotFoundException|Resources\$NotFoundException' \
+              deep-report/logcat.txt \
+              | tail -n 300 \
+              | tee -a deep-report/crash-analysis.txt || true
+
+            echo "=== PROCESS ===" | tee -a deep-report/final-state.txt
+            adb shell pidof "$PKG" | tee -a deep-report/final-state.txt || true
+
+            echo "=== PACKAGE RELATIONSHIPS ===" | tee deep-report/package-analysis.txt
+            adb shell dumpsys package "$PKG" > deep-report/package-dumpsys.txt || true
+
+            grep -Ein \
+              'mifitness|mifit|xiaomi|miui|wear|watch|bluetooth' \
+              deep-report/package-dumpsys.txt \
+              | head -n 500 \
+              | tee -a deep-report/package-analysis.txt || true
+
+            # Final crash decision.
+            if grep -Eq \
+              'FATAL EXCEPTION|AndroidRuntime: FATAL|Fatal signal|ANR in|SecurityException|ClassNotFoundException' \
+              deep-report/logcat.txt; then
+              echo "DEEP_TEST=FAIL_CRASH_OR_EXCEPTION" | tee -a deep-report/summary.txt
+              exit 1
+            fi
+
+            if [ -z "$(adb shell pidof "$PKG" 2>/dev/null | tr -d '[:space:]')" ]; then
+              echo "DEEP_TEST=FAIL_PROCESS_DIED" | tee -a deep-report/summary.txt
+              exit 1
+            fi
+
+            echo "DEEP_TEST=PASS_NO_FATAL_CRASH" | tee -a deep-report/summary.txt
+
+      - name: Upload deep investigation report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: XiaomiHealthResearch-V8-DEEP-REPORT
+          if-no-files-found: warn
+          path: deep-report/
