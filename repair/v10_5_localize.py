@@ -31,20 +31,8 @@ def valid_translation(src,out):
 def protected_tokens(s): return PLACEHOLDER_RE.findall(s)
 
 def translate_one(s):
-    if s in OVERRIDES:return OVERRIDES[s]
-    safe,vals=protect(s)
-    q=urllib.parse.quote(safe,safe='')
-    url='https://translate.googleapis.com/translate_a/single?client=gtx&sl=zh-CN&tl=ru&dt=t&q='+q
-    for i in range(6):
-        try:
-            with urllib.request.urlopen(url,timeout=20) as r:
-                data=json.loads(r.read().decode('utf-8'))
-            out=''.join(x[0] for x in data[0] if x and x[0])
-            for n,v in enumerate(vals): out=out.replace(f'__P{n}__',v)
-            if valid_translation(s,out): return out
-        except Exception: pass
-        time.sleep(0.75*(i+1))
-    return s
+    # V10.5 safety rule: no machine translation. Only vetted exact overrides.
+    return OVERRIDES.get(s, s)
 
 def should_translate(text, attrs):
     if not text or not text.strip() or not ZH_RE.search(text): return False
@@ -121,7 +109,7 @@ def main(root,cache_path):
     if os.path.exists(cache_path):
         try: cache=json.load(open(cache_path,encoding='utf-8'))
         except Exception: cache={}
-    unique=list(dict.fromkeys(targets)); todo=[s for s in unique if s not in cache]
+    unique=[s for s in dict.fromkeys(targets) if s in OVERRIDES]; todo=[s for s in unique if s not in cache]
     print(f'TRANSLATE_TARGETS={len(unique)} TODO={len(todo)}',flush=True)
     with ThreadPoolExecutor(max_workers=8) as ex:
         fs={ex.submit(translate_one,s):s for s in todo}
