@@ -1,0 +1,19 @@
+Xiaomi Health Research V10.6 — one-pass corrected build pipeline
+
+Build source:
+- Exact original Xiaomi Health Research 1.4.6 CN APK from branch v10-build.
+- Exact verified V8 classes.dex from branch v10-build.
+- All other original APK entries remain byte-identical except APK signatures and resources.arsc.
+
+Corrections carried forward:
+- Uses explicit sdkmanager discovery and separate package arguments; does not pass a multiline package list to setup-android.
+- Downloads Apktool with redirect following, retries, file-size validation, and SHA-256 verification.
+- Uses Apktool to compile locale resource overlays instead of hand-rewriting resources.arsc string pools.
+- Russian localization is restricted to reviewed exact-string overrides; no machine translation and no untranslated Chinese fall-through entries are added to values-ru.
+- Existing Russian resources are merged rather than replaced.
+- Verifies original/V8 hashes, APK zip integrity, zipalign, APK signatures, Android resource table parseability, the exact V8 DEX, manifest/classes2.dex identity, unchanged original payload, and presence of compiled Russian strings.
+
+Artifact expected from a successful workflow:
+XiaomiHealthResearch_1.4.6_RU_V10.6.apk
+
+Important: this archive contains the build workflow and repair scripts, not a prebuilt APK. The APK is produced by GitHub Actions after pushing the files.

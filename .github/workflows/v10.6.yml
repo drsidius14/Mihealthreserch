@@ -1,0 +1,147 @@
+name: Xiaomi Health Research V10.6 — corrected build pipeline
+
+on:
+  push:
+    branches: [v10.6-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mihealthreserch-v10.6-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Original + exact V8 DEX + safe Russian resource overlay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare Android SDK (manual sdkmanager discovery)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_HOME
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print 2>/dev/null | sort -V | tail -n 1 || true)"
+          fi
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found under $ANDROID_HOME/cmdline-tools" >&2
+            find "$ANDROID_HOME" -maxdepth 4 -type f -name sdkmanager -print 2>/dev/null || true
+            exit 1
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          test -x "$ANDROID_HOME/platform-tools/adb"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/zipalign"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -x "$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          echo "ANDROID_SDK_SETUP=PASS"
+
+      - name: Fetch and verify exact original + exact V8
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work output
+          git fetch --no-tags origin v10-build:refs/remotes/origin/v10-build
+          git show origin/v10-build:input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk > work/original.apk
+          git show origin/v10-build:input/XiaomiHealthResearch_1.4.6_RU_V8.apk > work/v8.apk
+          echo '9e872f2d75e4ec1d509216d8caa998c2957d797c57b8ecc1ed8c92054f53c4bc  work/original.apk' | sha256sum -c -
+          echo 'c3bd649826febc1e40895e4f9e7d30b3a7b2b27b989cd5917cb560e72de3c5b0  work/v8.apk' | sha256sum -c -
+          unzip -t work/original.apk >/dev/null
+          unzip -t work/v8.apk >/dev/null
+          python3 repair/v10_6_analyze.py work/original.apk work/v8.apk work/analysis.json
+
+      - name: Download and verify pinned Apktool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/apktool work/localized
+          curl --location --fail --silent --show-error \
+            --retry 4 --retry-all-errors --connect-timeout 20 --max-time 240 \
+            -o work/apktool.jar \
+            https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
+          test "$(stat -c '%s' work/apktool.jar)" -gt 20000000
+          echo 'c0350abbab5314248dfe2ee0c907def4edd14f6faef1f5d372d3d4abd28f0431  work/apktool.jar' | sha256sum -c -
+          java -jar work/apktool.jar --version | tee work/apktool-version.txt
+          grep -q '2.10.0' work/apktool-version.txt
+
+      - name: Decode original and build safe Russian overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -jar work/apktool.jar d -f --use-aapt2 -o work/apktool/original work/original.apk
+          python3 repair/v10_6_localize.py work/apktool/original work/translation-audit.json | tee work/localization.log
+          java -jar work/apktool.jar b -f --use-aapt2 work/apktool/original -o work/localized/compiled.apk
+          test -s work/localized/compiled.apk
+          unzip -t work/localized/compiled.apk >/dev/null
+
+      - name: Package V10.6 from original payload + V8 DEX + rebuilt resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 repair/v10_6_package.py work/original.apk work/v8.apk work/localized/compiled.apk work/unsigned.apk
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          "$BT/zipalign" -f -P 4 -v 4 work/unsigned.apk work/aligned.apk >/dev/null
+          keytool -genkeypair -v \
+            -keystore work/release.jks -storepass changeit -keypass changeit \
+            -alias release -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Mihealthreserch V10.6,O=Mihealthreserch,C=RU" >/dev/null 2>&1
+          "$BT/apksigner" sign \
+            --ks work/release.jks --ks-pass pass:changeit --key-pass pass:changeit \
+            --ks-key-alias release \
+            --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out output/XiaomiHealthResearch_1.4.6_RU_V10.6.apk work/aligned.apk
+
+      - name: Verify package, signature, resource table and functional parity
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          APK=output/XiaomiHealthResearch_1.4.6_RU_V10.6.apk
+          "$BT/zipalign" -c -P 4 -v 4 "$APK"
+          "$BT/apksigner" verify --verbose --print-certs "$APK" > work/signature-verification.txt
+          unzip -t "$APK" >/dev/null
+          "$BT/aapt2" dump badging "$APK" > work/badging.txt
+          "$BT/aapt2" dump resources "$APK" > work/resources-dump.txt
+          python3 repair/v10_6_verify.py work/original.apk work/v8.apk "$APK" work/analysis.json
+          sha256sum "$APK" | tee output/V10.6.sha256
+          echo 'V10.6_BUILD_AND_STATIC_VERIFICATION=PASS'
+
+      - name: Upload V10.6 APK and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: XiaomiHealthResearch_V10.6
+          if-no-files-found: error
+          path: |
+            output/XiaomiHealthResearch_1.4.6_RU_V10.6.apk
+            output/V10.6.sha256
+            work/analysis.json
+            work/localization.log
+            work/translation-audit.json
+            work/apktool-version.txt
+            work/signature-verification.txt
+            work/badging.txt
+            work/resources-dump.txt
