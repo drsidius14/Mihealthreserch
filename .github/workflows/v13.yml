@@ -41,6 +41,8 @@ jobs:
           set -euo pipefail
           python -m py_compile repair/v13_*.py
           python repair/v13_selftest.py
+          python repair/v13_localize_smali.py --self-test
+          python repair/v13_compare_smali.py --self-test
 
       - name: Prepare Android SDK tools
         shell: bash
@@ -101,14 +103,14 @@ jobs:
           set -euo pipefail
           python repair/v13_forensic.py work/original.apk work/v10.7.apk work/v8.apk work/github_forensic_v10_7.json | tee work/github-forensic.log
           python repair/v13_compare_forensic_reports.py repair/reference_local_v10_7.json work/github_forensic_v10_7.json work/forensic-crosscheck.json | tee work/forensic-crosscheck.log
-          python repair/v13_dex_cjk_audit.py work/v8.apk work/dex-hardcoded-cjk-audit.json | tee work/dex-hardcoded-cjk-audit.log
+          python repair/v13_dex_cjk_audit.py work/original.apk work/dex-hardcoded-cjk-audit.json | tee work/dex-hardcoded-cjk-audit.log
           echo 'V16_LOCAL_GITHUB_BYTE_FORENSICS=PASS'
 
       - name: Pin and verify Apktool
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p work/apktool work/decoded work/compiled
+          mkdir -p work/apktool work/decoded work/compiled work/baselines
           curl --location --fail --silent --show-error --retry 4 --retry-all-errors \
             --connect-timeout 20 --max-time 240 \
             -o work/apktool.jar \
@@ -137,11 +139,21 @@ jobs:
           python repair/v13_compare_resource_tables.py work/original-resources.dump work/v10.7-resources.dump work/v10.7-translation-audit.json work/v10.7-resource-semantic-comparison.json report-only | tee work/v10.7-resource-semantic-comparison.log
           echo 'V16_ORIGINAL_DECODE_AND_V10_7_SEMANTIC_DIAGNOSIS=PASS'
 
-      - name: Add reviewed RU locale overlay without modifying base values or code
+      - name: Capture exact original DEX Smali baseline before localization
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d work/decoded/original/smali
+          cp -a work/decoded/original/smali work/baselines/original-smali
+          find work/baselines/original-smali -type f -name '*.smali' -print -quit | grep -q .
+          echo 'V16_ORIGINAL_SMALI_BASELINE_CAPTURED=PASS'
+
+      - name: Add reviewed RU locale overlay and translate visible hard-coded UI strings
         shell: bash
         run: |
           set -euo pipefail
           python repair/v13_localize.py work/decoded/original repair/v13_translations.json work/translation-audit.json | tee work/localization.log
+          python repair/v13_localize_smali.py work/decoded/original/smali repair/v13_dex_translations.json work/dex-localization-audit.json | tee work/dex-localization.log
           python repair/v13_validate_ru_resource_dirs.py work/decoded/original work/ru-resource-dir-audit.json | tee work/ru-resource-dir-audit.log
           python repair/v13_coverage.py work/original-resources.dump work/translation-audit.json work/translation-coverage.json | tee work/translation-coverage.log
           echo 'V16_TRANSLATION_COVERAGE_GATE=PASS'
@@ -164,11 +176,19 @@ jobs:
           python repair/v13_compare_decoded_tree.py work/decoded/original work/decoded/compiled work/translation-audit.json work/decoded-tree-comparison.json report-only | tee work/decoded-tree-comparison.log
           echo 'V16_RESOURCE_SEMANTICS=PASS'
 
-      - name: Package original payload plus exact V8 DEX and matching compiled resources
+      - name: Compare rebuilt original DEX against original Smali baseline
         shell: bash
         run: |
           set -euo pipefail
-          python repair/v13_package.py work/original.apk work/v8.apk work/compiled/localized.apk work/unsigned.apk | tee work/package-verification.log
+          java -jar work/apktool.jar d -f -o work/decoded/rebuilt work/compiled/localized.apk
+          python repair/v13_compare_smali.py work/baselines/original-smali work/decoded/rebuilt/smali repair/v13_dex_translations.json work/smali-roundtrip-comparison.json | tee work/smali-roundtrip-comparison.log
+          echo 'V16_ORIGINAL_DEX_ONLY_REVIEWED_STRINGS_CHANGED=PASS'
+
+      - name: Package original payload plus reviewed DEX strings and matching compiled resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python repair/v13_package.py work/original.apk work/v8.apk work/compiled/localized.apk work/compiled/localized.apk work/unsigned.apk | tee work/package-verification.log
           BT="$ANDROID_HOME/build-tools/35.0.0"
           "$BT/zipalign" -f -P 16 -v 4 work/unsigned.apk work/aligned.apk >/dev/null
           keytool -genkeypair -v \
@@ -181,14 +201,6 @@ jobs:
             --out output/XiaomiHealthResearch_1.4.6_RU_V16.apk work/aligned.apk
           test -s output/XiaomiHealthResearch_1.4.6_RU_V16.apk
 
-      - name: Upload built APK for device testing even if later audit fails
-        if: always() && hashFiles('output/XiaomiHealthResearch_1.4.6_RU_V16.apk') != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: XiaomiHealthResearch_V16_Build
-          if-no-files-found: error
-          path: output/XiaomiHealthResearch_1.4.6_RU_V16.apk
-
       - name: Independent V16 APK, DEX, manifest, resource-reference, and translation audit
         shell: bash
         run: |
@@ -200,7 +212,7 @@ jobs:
           unzip -t "$APK" >/dev/null
           "$BT/aapt2" dump resources "$APK" > work/v13-resources.dump
           "$BT/aapt2" dump badging "$APK" > work/v13-badging.txt
-          python repair/v13_verify.py work/original.apk work/v8.apk "$APK" work/v13-resources.dump work/v13-badging.txt work/translation-audit.json repair/v13_translations.json | tee work/v13-verification.log
+          python repair/v13_verify.py work/original.apk work/v8.apk work/compiled/localized.apk "$APK" work/v13-resources.dump work/v13-badging.txt work/translation-audit.json repair/v13_translations.json repair/v13_dex_translations.json work/dex-localization-audit.json | tee work/v13-verification.log
           python repair/v13_compare_resource_tables.py work/original-resources.dump work/v13-resources.dump work/translation-audit.json work/v13-resource-semantic-comparison.json strict | tee work/v13-resource-semantic-comparison.log
           sha256sum "$APK" | tee output/V16.sha256
           cp work/translation-coverage.json output/V16_translation_coverage.json
@@ -225,6 +237,10 @@ jobs:
             work/ru-resource-dir-audit.json
             work/ru-resource-dir-audit.log
             work/localization.log
+            work/dex-localization-audit.json
+            work/dex-localization.log
+            work/smali-roundtrip-comparison.json
+            work/smali-roundtrip-comparison.log
             work/critical-source-shapes.json
             work/attribute-format-repair.json
             work/attribute-format-repair.log
@@ -259,7 +275,7 @@ jobs:
             output/V16_translation_coverage.json
 
   android-15-onboarding-smoke:
-    name: Android 15 x86_64 emulator — launch and Russian onboarding
+    name: Android 15 x86_64 emulator — onboarding, basic mode, tab comparison
     needs: build-and-verify
     runs-on: ubuntu-24.04
     timeout-minutes: 50
@@ -323,6 +339,36 @@ jobs:
             ORIGINAL_PID="$(adb shell pidof com.mi.healthresearch | tr -d '\r' || true)"
             test -n "$ORIGINAL_PID"
             adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-original.txt"
+            ORIG_COORDS="$(python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/original.xml" tap '不同意并进入基础模式' 2>/dev/null || true)"
+            read -r OX OY <<< "$ORIG_COORDS"
+            if [[ -n "${OX:-}" && -n "${OY:-}" ]]; then
+              adb shell input tap "$OX" "$OY"
+              sleep 8
+              adb shell uiautomator dump /sdcard/v13-original-basic.xml >/dev/null || true
+              adb pull /sdcard/v13-original-basic.xml "$GITHUB_WORKSPACE/runtime-report/original-basic.xml" >/dev/null || true
+              for LABEL in '设备' '我的'; do
+                case "$LABEL" in 设备) FILE=device;; 我的) FILE=profile;; esac
+                COORDS="$(python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/original-basic.xml" tap "$LABEL" 2>/dev/null || true)"
+                read -r TX TY <<< "$COORDS"
+                if [[ -z "${TX:-}" || -z "${TY:-}" ]]; then
+                  echo "ORIGINAL_TAB_TAP_TARGET_MISSING=$LABEL" >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt"
+                  continue
+                fi
+                adb shell input tap "$TX" "$TY" || true
+                sleep 8
+                adb shell uiautomator dump "/sdcard/v13-original-${FILE}.xml" >/dev/null || true
+                adb pull "/sdcard/v13-original-${FILE}.xml" "$GITHUB_WORKSPACE/runtime-report/original-${FILE}.xml" >/dev/null || true
+                adb exec-out screencap -p > "$GITHUB_WORKSPACE/runtime-report/original-${FILE}.png" || true
+                python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/original-${FILE}.xml" check-tab "$LABEL" >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt" 2>&1 || true
+                adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-original-${FILE}.txt"
+                adb shell input keyevent 4 || true
+                sleep 2
+                adb shell uiautomator dump /sdcard/v13-original-basic.xml >/dev/null || true
+                adb pull /sdcard/v13-original-basic.xml "$GITHUB_WORKSPACE/runtime-report/original-basic.xml" >/dev/null || true
+              done
+            else
+              echo 'ORIGINAL_BASIC_MODE_TAP_TARGET_MISSING=不同意并进入基础模式' >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt"
+            fi
             adb shell am force-stop com.mi.healthresearch || true
             adb uninstall com.mi.healthresearch
 
@@ -341,6 +387,32 @@ jobs:
             if grep -E 'Missing android.support.FILE_PROVIDER_PATHS meta-data|Unable to get provider com\.mi\.research\.upgrade\.download\.AppUpgradeProvider|FATAL EXCEPTION' "$GITHUB_WORKSPACE/runtime-report/logcat-v10.7.txt" | grep -E 'com\.mi\.healthresearch|main|AppUpgradeProvider|FILE_PROVIDER_PATHS'; then
               echo 'V10.7_STARTUP_REGRESSION_FOUND=YES'
             fi
+            read -r BX BY < <(python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/v10.7.xml" tap 'Не соглашаться и перейти в базовый режим')
+            adb shell input tap "$BX" "$BY"
+            sleep 8
+            adb shell uiautomator dump /sdcard/v13-v107-basic.xml >/dev/null
+            adb pull /sdcard/v13-v107-basic.xml "$GITHUB_WORKSPACE/runtime-report/v10.7-basic.xml" >/dev/null
+            for LABEL in 'Устройства' 'Профиль'; do
+              case "$LABEL" in Устройства) FILE=device;; Профиль) FILE=profile;; esac
+              COORDS="$(python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/v10.7-basic.xml" tap "$LABEL" 2>/dev/null || true)"
+              read -r TX TY <<< "$COORDS"
+              if [[ -z "${TX:-}" || -z "${TY:-}" ]]; then
+                echo "V10.7_TAB_TAP_TARGET_MISSING=$LABEL" >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt"
+                continue
+              fi
+              adb shell input tap "$TX" "$TY" || true
+              sleep 8
+              adb shell uiautomator dump "/sdcard/v13-v107-${FILE}.xml" >/dev/null || true
+              adb pull "/sdcard/v13-v107-${FILE}.xml" "$GITHUB_WORKSPACE/runtime-report/v10.7-${FILE}.xml" >/dev/null || true
+              adb exec-out screencap -p > "$GITHUB_WORKSPACE/runtime-report/v10.7-${FILE}.png" || true
+              python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/v10.7-${FILE}.xml" check-tab "$LABEL" >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt" 2>&1 || true
+              adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-v10.7-${FILE}.txt"
+              # Use the base-mode UI dump again before tapping the second tab.
+              adb shell input keyevent 4 || true
+              sleep 2
+              adb shell uiautomator dump /sdcard/v13-v107-basic.xml >/dev/null || true
+              adb pull /sdcard/v13-v107-basic.xml "$GITHUB_WORKSPACE/runtime-report/v10.7-basic.xml" >/dev/null || true
+            done
             adb shell am force-stop com.mi.healthresearch || true
             adb uninstall com.mi.healthresearch
 
@@ -371,8 +443,31 @@ jobs:
               echo 'V16_APP_CRASH=FAIL'
               exit 1
             fi
+            for LABEL in 'Устройства' 'Профиль'; do
+              case "$LABEL" in Устройства) FILE=device;; Профиль) FILE=profile;; esac
+              CURRENT_UI="$GITHUB_WORKSPACE/runtime-report/basic-mode.xml"
+              COORDS="$(python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$CURRENT_UI" tap "$LABEL" 2>/dev/null || true)"
+              read -r TX TY <<< "$COORDS"
+              if [[ -z "${TX:-}" || -z "${TY:-}" ]]; then
+                echo "V16_TAB_TAP_TARGET_MISSING=$LABEL" >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt"
+                continue
+              fi
+              adb shell input tap "$TX" "$TY" || true
+              sleep 10
+              adb shell uiautomator dump "/sdcard/v13-v16-${FILE}.xml" >/dev/null || true
+              adb pull "/sdcard/v13-v16-${FILE}.xml" "$GITHUB_WORKSPACE/runtime-report/v16-${FILE}.xml" >/dev/null || true
+              adb exec-out screencap -p > "$GITHUB_WORKSPACE/runtime-report/v16-${FILE}.png" || true
+              python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/v16-${FILE}.xml" check-tab "$LABEL" >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt" 2>&1 || true
+              adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-v16-${FILE}.txt"
+              adb shell input keyevent 4 || true
+              sleep 2
+              adb shell uiautomator dump /sdcard/v13-basic-mode.xml >/dev/null || true
+              adb pull /sdcard/v13-basic-mode.xml "$GITHUB_WORKSPACE/runtime-report/basic-mode.xml" >/dev/null || true
+            done
             echo "V16_EMULATOR_PID=$PID"
             echo 'V16_ANDROID15_RU_ONBOARDING_AND_BASIC_MODE=PASS'
+            echo 'V16_DEVICE_PROFILE_TABS_CAPTURED_FOR_COMPARISON=YES'
+            echo 'NOTE: Emulator does not include Xiaomi Mi Fitness/account backend; tab content and auth can remain environment-dependent.' > "$GITHUB_WORKSPACE/runtime-report/limitations.txt"
 
       - name: Upload Android runtime diagnostics
         if: always()

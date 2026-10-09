@@ -376,7 +376,7 @@
   "onboarding_join_experience_program": "Присоединитесь к <a href=\"%1$s\">программе улучшения пользовательского опыта</a> и предоставьте больше данных, чтобы улучшать продукты и услуги.",
   "onboarding_needlogin": "Сначала войдите в Mi Fitness.",
   "onboarding_please_read": "Прочитайте и примите условия",
-  "onboarding_privacy_tips_2": " <a href=\"%1$s\">Пользовательское соглашение Xiaomi Health Research</a>, <a href=\"%2$s\">политика конфиденциальности Xiaomi Health Research</a> и <a href=\"%3$s\">краткое изложение политики конфиденциальности</a>",
+  "onboarding_privacy_tips_2": " <a href=\"%1$s\">Пользовательское соглашение Xiaomi Health Research</a><a href=\"%2$s\">, политика конфиденциальности Xiaomi Health Research</a><a href=\"%3$s\"> и краткое изложение политики конфиденциальности</a>",
   "onboarding_privacy_tips_xieyi": " <a href=\"%1$s\">Пользовательское соглашение Xiaomi Health Research</a>",
   "onboarding_privacy_tips_yinsi": " <a href=\"%1$s\">Политика конфиденциальности Xiaomi Health Research</a>",
   "onboarding_privacy_tips_zhaiyao": " <a href=\"%1$s\">Краткое изложение политики конфиденциальности</a>",

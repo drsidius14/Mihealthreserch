@@ -1,22 +1,32 @@
-V16 CHANGELOG — fixes from the actual failed V15 GitHub Actions run
+V16 CHANGELOG
 
-Confirmed blocking failure
-- Run 37922250556 (commit 43f4f50c0621df3bd7a5b49b93cdd04f5c596fe4) passed checkout, Python self-tests, Android SDK setup, exact APK fingerprints, forensic comparison, Apktool verification, original decoding, localization, and the critical onboarding gate.
-- The Apktool resource rebuild failed because aapt2 rejected directories `values-ru-bo-rCN` and `values-ru-ug-rCN` as invalid configurations.
-- `language_for_part()` used a short allow-list that omitted the valid Android language codes `bo` and `ug`. The router therefore treated those locale segments as ordinary qualifiers and emitted the invalid names. Packaging, static APK verification and Android emulator testing were skipped.
+V16 REPAIR PATCH — findings from the APK screenshots and failed static audit (2026-10-09)
 
-Fixes
-1. Recognize generic two/three-letter Android language qualifiers and BCP-47 `b+...` tags rather than relying on the incomplete locale allow-list. Both `values-bo-rCN` and `values-ug-rCN` now route to `values-ru` while non-locale qualifiers remain intact.
-2. Reject malformed region-only source qualifiers rather than manufacturing invalid output directories.
-3. Add an explicit pre-aapt2 gate to audit all `values-ru*` directories, with a negative test for the exact observed `values-ru-bo-rCN` failure.
-4. Fix translation-coverage parsing: aapt2's resource headers do not always include `PUBLIC`; the old parser silently reported zero Chinese strings and a false 0% coverage. V16 parses public and non-public entries and fails if it finds zero default CJK strings.
-5. Fix a placeholder-parser false positive: `% s` is not a valid Java Formatter string conversion (Java throws `FormatFlagsConversionMismatchException`). The old regex treated it as a required placeholder and skipped `sport_run_rate_increase_suggestion`. V16 excludes invalid flags for string/character/general conversions and has regression tests for valid `%1$s`, `%2$d`, and `%%` tokens.
-6. Version the CI display name, candidate/final artifacts, APK filename and checksum as V16, while retaining the existing `.github/workflows/v13.yml` path and `v13-build` branch to avoid duplicate workflow runs.
-7. Harden the Termux applicator: it checks unexpected local changes before cleanup, preserves only known timestamped backups, verifies Python syntax, runs self-tests, checks staged diffs, and pushes only the expected patch files.
+Confirmed failure in the previously built V16 APK
+- GitHub Actions run 37932613648 successfully compiled the resources and packaged the APK, but the independent release gate failed before Android emulator tests.
+- Exact error: `V13_TRANSLATION_MAP_AUDIT_MISMATCH:hospital_sleep_need_opened_tips`. The localized resource still contained a Chinese suffix after the Russian text.
+- Root cause was in the styled-string replacement routine: Android XML stored part of the source text in the first styled child’s `.tail`; the routine cleared some descendant text but left that tail intact.
 
-Verification in this package
-- `python -m py_compile repair/v13_*.py` passed.
-- `python repair/v13_selftest.py` passed, including new locale routing, invalid-directory rejection, coverage parsing and Java Formatter checks.
-- The actual APK build and Android 15 runtime test cannot be claimed until the new GitHub Actions run completes successfully.
+Repairs included in this source package
+1. Clear all descendant text and tails before writing the complete Russian translation for styled string resources. Regression tests cover the exact failed resource shape.
+2. Translate eleven reviewed hard-coded, user-visible DEX strings: four home-card descriptions, the Mi Fitness hand-off dialog / error text, and the earlier blood-pressure title literal.
+3. Restrict generic dialog labels `取消` and `打开` to the Smali method that contains the unique app-to-Mi-Fitness prompt. This avoids changing every use of those generic words elsewhere in the app.
+4. Decode/rebuild the V8 `classes.dex` source and compare all Smali files. The comparison permits only allow-listed string changes and mechanical `const-string` → `const-string/jumbo` widening; it rejects method, opcode, register, control-flow, or file-set differences.
+5. Verify DEX checksum/signature fields and all approved translation literals in the final APK.
+6. Expand Android 15 emulator diagnostics to capture original, V10.7, and candidate V16 home/device/profile tab UI XML, screenshots, and logcat for direct comparison.
 
-Additional qualifier-hardening: legacy Android locales are restricted to the documented two-letter code shape; `car` UI-mode and the required MCC/MNC-before-locale qualifier ordering are covered by regression fixtures.
+Important limits
+- These checks are source/package repairs and local regression tests. This package has not yet been run by GitHub Actions; the corrected APK and emulator result do not exist until that run completes.
+- The empty Device/Profile screens in the user's screenshots are not yet conclusively attributed to one cause. The emulator lacks Xiaomi Mi Fitness and a real Xiaomi account/backend session, so a blank authenticated screen may not be reproducible there.
+- The existing build re-signs the APK with a generated test certificate. The original Xiaomi signing key is unavailable. If Xiaomi's account/backend or another app enforces the original signing certificate, a repackaged APK cannot be made fully equivalent by resource translation alone. Do not treat a static pass as proof that Xiaomi account, authorization, wearable connection, or data sync work.
+
+Source package only; no claim of a released/verified APK is made.
+
+---
+
+Historical V16 resource-build fixes
+- Valid Android locale routing for bo/ug and BCP-47 locales; preserve non-language qualifiers such as car and correct MCC/MNC ordering.
+- Reject malformed generated resource qualifiers before aapt2.
+- Parse both public and non-public resource headers for CJK translation coverage.
+- Validate Java Formatter placeholders with valid flag/conversion combinations.
+- Preserve exact original non-resource payload and use a matching compiled resource table plus `res/` files.

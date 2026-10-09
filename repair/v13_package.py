@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Package V13 with a consistent resources.arsc + compiled res/ directory.
+"""Package V16 with a consistent resources.arsc + compiled res/ directory and reviewed Smali strings.
 
-V10.6 replaced resources.arsc from an Apktool rebuild but retained the original
-obfuscated res/ ZIP entries. That made the resource table point at paths that
-were not present in the APK. V13 replaces the whole compiled res/ payload as
-well as resources.arsc, while preserving the original manifest, assets, libs,
-classes2.dex, and all other non-resource payload; classes.dex comes from exact V8.
+The package replaces resources.arsc and the matching compiled res/ payload, plus a
+reassembled classes.dex whose Smali diff is independently restricted to the reviewed
+user-visible strings. It preserves the original manifest, assets, native libraries,
+classes2.dex, and every other non-resource payload byte-for-byte.
 """
 import hashlib
 import os
@@ -31,14 +30,14 @@ def is_old_signature(name):
     return name.startswith("META-INF/") and name.upper().endswith(SIGNATURE_SUFFIXES)
 
 
-def main(original, v8, compiled, out):
+def main(original, v8, compiled_dex, compiled_resources, out):
     if sha256(original) != EXPECTED_ORIGINAL:
         raise SystemExit("ORIGINAL_SHA256_MISMATCH")
     if sha256(v8) != EXPECTED_V8:
         raise SystemExit("V8_SHA256_MISMATCH")
 
-    with zipfile.ZipFile(original, "r") as oz, zipfile.ZipFile(v8, "r") as vz, zipfile.ZipFile(compiled, "r") as cz:
-        for label, z in (("ORIGINAL", oz), ("V8", vz), ("APKTOOL_COMPILED", cz)):
+    with zipfile.ZipFile(original, "r") as oz, zipfile.ZipFile(v8, "r") as vz, zipfile.ZipFile(compiled_dex, "r") as dz, zipfile.ZipFile(compiled_resources, "r") as cz:
+        for label, z in (("ORIGINAL", oz), ("V8", vz), ("ORIGINAL_SMALI_REASSEMBLED", dz), ("APKTOOL_COMPILED_RESOURCES", cz)):
             bad = z.testzip()
             if bad:
                 raise SystemExit(f"{label}_ZIP_CRC_FAILURE:{bad}")
@@ -58,10 +57,12 @@ def main(original, v8, compiled, out):
         if len(provider_blob) < 8:
             raise SystemExit("PROVIDER_XML_EMPTY_OR_TRUNCATED")
 
-        dex = vz.read("classes.dex")
+        if "classes.dex" not in dz.namelist():
+            raise SystemExit("ORIGINAL_SMALI_BUILD_MISSING_CLASSES_DEX")
+        dex = dz.read("classes.dex")
         arsc = cz.read("resources.arsc")
         if not dex.startswith(b"dex\n"):
-            raise SystemExit("V8_CLASSES_DEX_INVALID")
+            raise SystemExit("ORIGINAL_SMALI_REASSEMBLED_CLASSES_DEX_INVALID")
         if len(arsc) < 40:
             raise SystemExit("COMPILED_RESOURCES_ARSC_TOO_SMALL")
 
@@ -123,8 +124,8 @@ def main(original, v8, compiled, out):
         names = final.namelist()
         if len(names) != len(set(names)):
             raise SystemExit("V13_DUPLICATE_ZIP_ENTRIES")
-        if final.read("classes.dex") != vz.read("classes.dex"):
-            raise SystemExit("V13_CLASSES_DEX_NOT_EXACT_V8")
+        if final.read("classes.dex") != dex:
+            raise SystemExit("V16_CLASSES_DEX_NOT_EXACT_ORIGINAL_SMALI_REASSEMBLY")
         if final.read("classes2.dex") != oz.read("classes2.dex"):
             raise SystemExit("V13_CLASSES2_DEX_CHANGED")
         if final.read("AndroidManifest.xml") != oz.read("AndroidManifest.xml"):
@@ -139,7 +140,7 @@ def main(original, v8, compiled, out):
                 raise SystemExit("ORIGINAL_NON_RESOURCE_PAYLOAD_CHANGED:" + name)
 
     print("V13_ORIGINAL_NON_RESOURCE_PAYLOAD=PRESERVED")
-    print("V13_CLASSES_DEX=EXACT_V8")
+    print("V16_CLASSES_DEX=EXACT_ORIGINAL_SMALI_REASSEMBLY")
     print("V13_CLASSES2_DEX=EXACT_ORIGINAL")
     print("V13_MANIFEST=EXACT_ORIGINAL")
     print("V13_RESOURCES_ARSC_AND_RES_FILES=CONSISTENT_SET")
@@ -149,6 +150,6 @@ def main(original, v8, compiled, out):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
-        raise SystemExit("usage: v13_package.py original.apk v8.apk apktool-compiled.apk unsigned.apk")
+    if len(sys.argv) != 6:
+        raise SystemExit("usage: v13_package.py original.apk v8-reference.apk original-smali-rebuilt.apk apktool-compiled-resources.apk unsigned.apk")
     main(*sys.argv[1:])

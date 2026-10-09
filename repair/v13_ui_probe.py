@@ -47,6 +47,22 @@ def main(path, mode='check', needle='Не соглашаться и перейт
         print('V13_BASIC_MODE_LEFT_ONBOARDING=PASS')
         print('V13_BASIC_MODE_UI_NODES='+str(len(nodes)))
         return
+    if mode=='check-tab':
+        global_shell={
+            'Здоровье','Устройства','Профиль','Исследование здоровья Xiaomi',
+            'Наслаждайтесь здоровой жизнью','健康','设备','我的','小米健康研究','畅享健康生活'
+        }
+        # App status-bar/nav-bar nodes are not in uiautomator's app XML on most
+        # Android builds; remove only known global app shell labels, not content.
+        substantive=sorted({t for t in texts if t and t not in global_shell})
+        print('V16_TAB_TITLE='+needle)
+        print('V16_TAB_VISIBLE_CONTENT_COUNT='+str(len(substantive)))
+        print('V16_TAB_VISIBLE_CONTENT_SAMPLE='+repr(substantive[:50]))
+        if substantive:
+            print('V16_TAB_NOT_VISIBLY_EMPTY=YES')
+        else:
+            print('V16_TAB_BLANK_SCREEN_SUSPECTED=YES')
+        return
     for n,t in zip(nodes,texts):
         if needle in t:
             b=bounds_center(n.attrib.get('bounds'))

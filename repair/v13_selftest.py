@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Offline regression tests for V13 localization and resource semantics."""
-import json, subprocess, sys, tempfile, xml.etree.ElementTree as ET
+import json, re, subprocess, sys, tempfile, xml.etree.ElementTree as ET
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from v13_compare_resource_tables import normalize_value
 from v13_restore_attribute_formats import main as restore_attribute_formats
-from v13_localize import target_values_dir, language_for_part, placeholder_signature
+from v13_localize import target_values_dir, language_for_part, placeholder_signature, replace_rich, all_text
 
 CRITICAL = {
  'app_name':'Исследование здоровья Xiaomi',
@@ -50,6 +50,13 @@ def main():
     assert placeholder_signature(valid) == {'%1$s': 1, '%2$d': 1, '%%': 1}
     datefmt = ET.fromstring('<string name="format">Year %1$tY</string>')
     assert placeholder_signature(datefmt) == {'%1$tY': 1}
+    # Regression from the actual V16 audit: Chinese text survived in a styled
+    # string's first child tail after a Russian replacement.
+    styled = ET.fromstring('<string name="hospital_sleep_need_opened_tips"><b>中文开头</b>”，点击右上角菜单，开启“</string>')
+    replacement = 'Чтобы использовать исследование апноэ сна, включите «Высокоточную регистрацию сна».'
+    assert replace_rich(styled, 'hospital_sleep_need_opened_tips', replacement)
+    assert all_text(styled) == replacement, all_text(styled)
+    assert not re.search(r'[\u3400-\u4dbf\u4e00-\u9fff]', all_text(styled)), all_text(styled)
     prose = ET.fromstring('<string name="format">10% increase; more than 5% is unusual</string>')
     assert not placeholder_signature(prose), placeholder_signature(prose)
 
@@ -170,6 +177,7 @@ def main():
         lines.append('<string name="common_am" translatable="false">上午</string>')
         lines.append('<string name="common_pm">%1$s下午</string>')
         lines.append('<string name="sport_run_rate_increase_suggestion">建议跑量增加的上限不超过前一周的10% s</string>')
+        lines.append('<string name="hospital_sleep_need_opened_tips"><b>需开启中文说明</b>”，点击右上角菜单，开启“</string>')
         lines.append('</resources>')
         base_xml='\n'.join(lines)+'\n'; source=values/'strings.xml'; source.write_text(base_xml,encoding='utf-8')
         translations['common_pm']='下午'
@@ -195,6 +203,9 @@ def main():
         assert not any(x.get('reason') == 'unsupported_rich_xml_shape' for x in data['skipped_rich_xml']), data['skipped_rich_xml']
         assert not any(x.get('key') == 'sport_run_rate_increase_suggestion' for x in data['skipped_rich_xml']), data['skipped_rich_xml']
         assert 'sport_run_rate_increase_suggestion' in data['keys_written'], data['skipped_rich_xml']
+        sleep_tip = next(row for row in data['translations'] if row['resource'][1]=='hospital_sleep_need_opened_tips')
+        assert sleep_tip['value'] == translations['hospital_sleep_need_opened_tips'], sleep_tip
+        assert not re.search(r'[\u3400-\u4dbf\u4e00-\u9fff]', sleep_tip['value']), sleep_tip
         locale_only = ET.parse(root/'res'/'values-ru'/'locale_only.xml').getroot()
         assert {e.attrib.get('name') for e in locale_only} == {'bo_only_translation_test','ug_only_translation_test'}
         car_locale_only = ET.parse(root/'res'/'values-ru-car'/'locale_only.xml').getroot()
@@ -266,6 +277,8 @@ def main():
     code=Path(__file__).with_name('v13_localize.py').read_text(encoding='utf-8')
     assert 'mandatory_ru_overlay_for_translatable_false_source' in code
     assert 'V13_LOCALIZATION_FAILURE_AUDIT=' in code
+    assert 'Clear ALL text/tails before writing' in code
+    assert 'Clear ALL text/tails before writing' in code
     print('V16_ANDROID_LANGUAGE_QUALIFIER_ROUTING=PASS')
     print('V16_ANDROID_CAR_MODE_QUALIFIER_PRESERVED=PASS')
     print('V16_ANDROID_MCC_QUALIFIER_ORDER_PRESERVED=PASS')

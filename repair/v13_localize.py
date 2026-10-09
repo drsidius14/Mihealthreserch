@@ -33,10 +33,10 @@ RICH_SEGMENTS = {
         'lead': ' ',
         'anchors': [
             'Пользовательское соглашение Xiaomi Health Research',
-            'политика конфиденциальности Xiaomi Health Research',
-            'краткое изложение политики конфиденциальности'
+            ', политика конфиденциальности Xiaomi Health Research',
+            ' и краткое изложение политики конфиденциальности'
         ],
-        'tails': [', ', ' и ', '']
+        'tails': ['', '', '']
     },
     'onboarding_privacy_tips_xieyi': {
         'lead': ' ', 'anchors': ['Пользовательское соглашение Xiaomi Health Research'], 'tails': ['']
@@ -239,15 +239,17 @@ def replace_rich(elem, name, translated):
                 if not children:
                     elem.text = translated
                 else:
+                    # Styled Android strings often keep the remaining source text in
+                    # the first child's .tail. Clear ALL text/tails before writing the
+                    # single reviewed translation, otherwise Chinese suffixes survive
+                    # after the Russian text and may trip audit / render in the UI.
                     elem.text = None
-                    set_first_text_leaf(children[0], translated)
-                    # Empty later wrappers rather than retaining old-language text.
-                    first_branch = set(children[0].iter())
                     for node in elem.iter():
-                        if node is elem or node in first_branch:
+                        if node is elem:
                             continue
-                        if isinstance(node.tag, str): node.text = None
+                        node.text = None
                         node.tail = None
+                    set_first_text_leaf(children[0], translated)
                 return True
         return False
 

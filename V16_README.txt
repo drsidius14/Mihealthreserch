@@ -1,25 +1,20 @@
-Xiaomi Health Research 1.4.6 — V16 source patch
+Xiaomi Health Research 1.4.6 — V16 repair source package
 
 Purpose
-- Fix the confirmed V15 GitHub Actions failure in Android resource locale routing.
-- Keep the original APK's code, manifest, native libraries, assets, and non-resource payload under the existing strict forensic gates.
-- Preserve Russian translations, consent-link HTML, hrefs, and format placeholders.
+- Correct the exact styled-string localization defect that stopped the previous V16 static audit.
+- Translate the four Chinese home-card descriptions and user-visible Mi Fitness hand-off dialog strings while minimizing any executable-code change. The new build derives `classes.dex` from the exact ORIGINAL APK—not the older V8 binary—and changes only an allow-list of eleven string literals.
+- Verify Smali changes against the V8 baseline and preserve original non-resource payload, including the original DEX baseline apart from reviewed visible-text literals.
+- Capture comparative original / V10.7 / candidate UI, screenshots, and logcat for the Device/Profile blank-screen investigation.
 
-What the single Termux command does
-1. Unpacks this patch into a unique temporary directory.
-2. Verifies the local repository is safe to modify and switches to the existing v13-build branch.
-3. Applies the source patch, checks Python syntax, and runs offline regression tests.
-4. Commits and pushes to v13-build, which triggers the existing GitHub Actions workflow.
-5. GitHub fetches the exact original/V8 APKs, runs resource-table audits, compiles, signs and statically verifies the APK, then runs Android 15 emulator checks.
+Applying the package
+- Download `XiaomiHealthResearch_V16_REPAIR.zip` to the Android Download folder.
+- Run the single Termux command provided in the chat.
+- The applicator verifies the package checksum manifest and local Python regression tests, applies only this source patch, and commits/pushes to the existing `v13-build` branch. GitHub Actions builds and validates the Android APK.
 
 Release policy
-- A compiled APK is a candidate until all strict resource-table, APK/DEX/manifest, signature and Android 15 runtime gates pass.
-- The final downloadable artifact is XiaomiHealthResearch_V16 only after runtime tests pass.
-- The workflow file and helper script filenames retain their historical v13 names to update the existing branch/workflow in place and avoid duplicate workflows.
-- This package does not include the original APK or a compiled APK; GitHub obtains the exact input APKs from the repository and performs the Android build.
-
-APK alignment
-- Native-library alignment is checked at 16 KiB page boundaries (`zipalign -P 16`) before signing; the signed APK is checked again. Android documents that alignment must happen before `apksigner`, because post-signing APK edits invalidate the signature.
+- The source ZIP is not an APK and does not contain the original APK. GitHub Actions retrieves the exact original and V8 inputs from the repository.
+- A candidate APK must pass resource semantic comparison, APK/DEX/manifest/resource-reference checks, signature verification, and the Android 15 smoke test before it is called the final artifact.
+- Additional Device/Profile tab captures are diagnostic. The emulator does not contain Xiaomi Mi Fitness or a real account/backend session, so it cannot prove authorization or wearable-data functionality.
 
 Signing limitation
-- The workflow signs with a fresh test key when it runs. The original Xiaomi private signing key is unavailable, so the output cannot retain Xiaomi's original signature or guarantee backend acceptance. Because the test key is generated per run, Android may require uninstalling an earlier custom-signed build before installing a new one; back up any local app data first. A stable signing key would need to be managed separately as a private GitHub Actions secret and is deliberately not embedded in this public patch.
+- The build generates a test signing key for each run; it cannot retain Xiaomi's original signature because the original private key is not available. Xiaomi account/backend acceptance may therefore differ from the original app. A successful local static audit does not prove online authorization works.
