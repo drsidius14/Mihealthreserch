@@ -175,9 +175,17 @@ def replace_rich(elem, name, translated):
         return False
 
     if not anchors:
-        # Escaped HTML-link strings are text nodes; writing the reviewed whole
-        # string preserves the markup and its printf placeholders verbatim.
-        if len(list(elem)) == 0:
+        # Apktool may store escaped HTML links inside a single <Data> node.
+        # Preserve that wrapper and replace only its text content.
+        element_children = [child for child in list(elem) if isinstance(child.tag, str)]
+        data_children = [child for child in element_children if tag_name(child) == 'Data']
+        if len(element_children) == 1 and len(data_children) == 1:
+            data_children[0].text = translated
+            data_children[0].tail = None
+            elem.text = None
+            return True
+        # Plain escaped HTML strings without an annotation wrapper.
+        if not element_children:
             elem.text = translated
             return True
         return False

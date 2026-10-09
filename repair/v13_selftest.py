@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from v13_compare_resource_tables import normalize_value
 from v13_restore_attribute_formats import main as restore_attribute_formats
+from v13_localize import replace_rich
 
 CRITICAL = {
  'app_name':'Исследование здоровья Xiaomi',
@@ -21,6 +22,17 @@ CRITICAL = {
 
 def main():
     translations=json.loads((Path(__file__).with_name('v13_translations.json')).read_text(encoding='utf-8'))
+    # Reproduce Apktool's actual <Data>-wrapped escaped-HTML representation.
+    for key, placeholders in [
+        ('onboarding_join_experience_program', ['%1$s']),
+        ('onboarding_privacy_tips_2', ['%1$s', '%2$s', '%3$s'])
+    ]:
+        node = ET.fromstring('<string name="%s"><Data>旧的转义 HTML</Data></string>' % key)
+        assert replace_rich(node, key, translations[key]), key + ': Data wrapper rejected'
+        data = node.find('Data')
+        assert data is not None and data.text == translations[key], key + ': translated Data text missing'
+        assert all(token in data.text for token in placeholders), key + ': href placeholder lost'
+        assert not any('\\u3400' <= c <= '\\u9fff' for c in data.text), key + ': CJK remains'
     v=translations['hospital_bloodpressure_abnormal_from_device']
     assert '%1s' in v and 'Источник:' in v
     assert normalize_value('(file) res/aB.webp type=drawable') == normalize_value('(file) res/drawable-xxhdpi/about_img.webp type=drawable')
