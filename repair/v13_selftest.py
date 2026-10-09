@@ -33,6 +33,7 @@ def main():
         assert data is not None and data.text == translations[key], key + ': translated Data text missing'
         assert all(token in data.text for token in placeholders), key + ': href placeholder lost'
         assert not any('\\u3400' <= c <= '\\u9fff' for c in data.text), key + ': CJK remains'
+    assert '% s' in translations['sport_run_rate_increase_suggestion'], 'running rate placeholder lost'
     v=translations['hospital_bloodpressure_abnormal_from_device']
     assert '%1s' in v and 'Источник:' in v
     assert normalize_value('(file) res/aB.webp type=drawable') == normalize_value('(file) res/drawable-xxhdpi/about_img.webp type=drawable')
