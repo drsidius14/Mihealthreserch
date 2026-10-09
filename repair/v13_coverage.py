@@ -13,7 +13,7 @@ def main(dump,audit_path,report_path):
   if h: cur=h.group(1); continue
   if cur:
    v=VALUE.match(line)
-   if v and v.group(1).strip() in ('','default'):
+   if v:
     raw=v.group(2); m=re.search(r'"(.*)"(?: Data:.*)?$',raw); value=m.group(1) if m else raw
     if CJK.search(value): chinese.add(cur)
     cur=None
