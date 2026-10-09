@@ -1,0 +1,3 @@
+After downloading XiaomiHealthResearch_V15_FINAL.zip to Download, run this whole command in Termux:
+
+cd ~/Mihealthreserch; unzip -o "$HOME/storage/downloads/XiaomiHealthResearch_V15_FINAL.zip" -d "$HOME/v15-final-fix" && bash "$HOME/v15-final-fix/apply_v15.sh" "$HOME/Mihealthreserch"; read -r -p 'Нажми Enter, чтобы оставить окно Termux открытым... ' _

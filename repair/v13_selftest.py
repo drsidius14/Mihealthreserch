@@ -117,7 +117,8 @@ def main():
             if name=='onboarding_join_experience_program':
                 val='<string name="%s" translatable="false"> 加入<!-- 注释中的旧文本 --><b><a href="%%1$s">用户体验改进计划</a></b>提供更多数据来帮助改进产品和服务。</string>' % name
             elif name=='onboarding_privacy_tips_2':
-                val='<string name="%s" translatable="false"> <a href="%%1$s">《小米健康研究用户协议》</a>、<a href="%%2$s">《小米健康研究隐私政策》</a><a href="%%3$s">（《隐私政策》摘要）</a></string>' % name
+                # Apktool 3 decodes the compiled HTML payload into a Data node.
+                val='<string name="%s" translatable="false"><Data> &lt;a href=\"%%1$s\"&gt;《小米健康研究用户协议》&lt;/a&gt;、&lt;a href=\"%%2$s\"&gt;《小米健康研究隐私政策》&lt;/a&gt;&lt;a href=\"%%3$s\"&gt;（《隐私政策》摘要）&lt;/a&gt;</Data></string>' % name
             else:
                 val='<string name="%s">中文测试</string>' % name
             lines.append(val)
@@ -133,6 +134,11 @@ def main():
             raise AssertionError('V13 localizer fixture failed:\n'+proc.stdout+'\n'+proc.stderr)
         data=json.loads(audit.read_text(encoding='utf-8'))
         assert set(CRITICAL)==set(data['critical_keys_written']), data.get('critical_keys_written')
+        ru_xml=ET.parse(root/'res'/'values-ru'/'strings.xml').getroot()
+        privacy=next(e for e in ru_xml if e.attrib.get('name')=='onboarding_privacy_tips_2')
+        payload=privacy.find('Data')
+        assert payload is not None and '%1$s' in ''.join(payload.itertext()) and 'Пользовательское соглашение Xiaomi Health Research' in ''.join(payload.itertext())
+        assert '<a href=\"%1$s\">' in ''.join(payload.itertext()), 'encoded HTML links must remain encoded and functional'
         assert {x['key'] for x in data['nontranslatable_critical_overrides']} >= {'onboarding_join_experience_program','onboarding_privacy_tips_2'}
         assert any(x.get('key')=='common_am' and x.get('reason')=='translatable_false' for x in data['skipped_rich_xml'])
         assert any(x.get('key')=='common_pm' and x.get('reason')=='placeholder_mismatch' for x in data['skipped_rich_xml'])
@@ -141,10 +147,16 @@ def main():
         outmap={e.attrib.get('name'):e for e in list(out) if isinstance(e.tag,str)}
         for key, hrefs in [('onboarding_join_experience_program',['%1$s']),('onboarding_privacy_tips_2',['%1$s','%2$s','%3$s'])]:
             el=outmap[key]
-            assert not any('\u3400' <= c <= '\u9fff' for c in ''.join(el.itertext())), key+' still contains CJK'
+            visible=''.join(el.itertext())
+            assert not any('\u3400' <= c <= '\u9fff' for c in visible), key+' still contains CJK'
             actual=[n.attrib['href'] for n in el.iter() if isinstance(n.tag,str) and 'href' in n.attrib]
-            assert actual==hrefs,(key,actual)
-            assert not any(ch in ''.join(el.itertext()) for ch in ('用户体验','小米健康研究','隐私政策')), key+' untranslated text'
+            if key=='onboarding_privacy_tips_2' and el.find('Data') is not None:
+                # Apktool 3 encodes the original HTML anchors inside Data text.
+                payload=el.find('Data').text or ''
+                assert all(('href=\"'+ph+'\"') in payload for ph in hrefs), (key,payload)
+            else:
+                assert actual==hrefs,(key,actual)
+            assert not any(ch in visible for ch in ('用户体验','小米健康研究','隐私政策')), key+' untranslated text'
         escaped=outmap['onboarding_privacy_tips_xieyi']
         assert isinstance(escaped.text,str) and '<a href="%1$s">' in escaped.text, 'escaped HTML link text/placeholder lost'
         assert not any('\u3400' <= c <= '\u9fff' for c in escaped.text), 'escaped HTML link left CJK'

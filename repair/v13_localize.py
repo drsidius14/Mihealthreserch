@@ -149,9 +149,29 @@ def replace_rich(elem, name, translated):
     spec = RICH_SEGMENTS.get(name)
     anchors = [n for n in elem.iter() if n is not elem and
                (('href' in n.attrib) or tag_name(n) == 'a')]
+    # Apktool 3 encodes Android's compiled HTML-bearing string payload as a
+    # single <Data> child containing escaped HTML. This must be handled before
+    # the live-anchor path below: the <a> tags are text, not XML elements.
+    children = [child for child in list(elem) if isinstance(child.tag, str)]
+    if len(children) == 1 and tag_name(children[0]) == 'Data' and not anchors:
+        elem.text = None
+        children[0].text = translated
+        children[0].tail = None
+        return True
     if not spec:
         if len(list(elem)) == 0:
             elem.text = translated
+            return True
+        # Apktool 3 represents HTML-bearing Android strings as a single <Data>
+        # child whose text contains escaped HTML. Keep that node and every
+        # attribute intact, and replace only its text payload. Do not mistake
+        # the encoded <a href=...> markup for live XML child elements.
+        children = [child for child in list(elem) if isinstance(child.tag, str)]
+        if len(children) == 1 and tag_name(children[0]) == 'Data':
+            data = children[0]
+            elem.text = None
+            data.text = translated
+            data.tail = None
             return True
         # For simple emphasis-only resources retain existing wrappers.
         if not anchors:

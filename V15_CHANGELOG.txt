@@ -1,0 +1,12 @@
+V15 CHANGELOG
+
+Confirmed V14 CI root cause: Apktool 3 decodes HTML-bearing Android string resources into a single <Data> node containing encoded HTML text. The localizer treated this as an unsupported rich XML shape and rejected two mandatory onboarding consent strings.
+
+Fixes:
+- Preserve the <Data> node and all its attributes, replacing only its text payload with the reviewed Russian HTML string.
+- Keep the existing placeholder-signature validation and base resource immutability checks.
+- Add a regression test for encoded <a href="..."> links inside <Data>.
+- The existing strict resource-table comparison remains enabled; enum metadata differences are not waived.
+- The apply script removes generated Python bytecode and moves timestamped v13_coverage backups to ~/v15-preserved-local-files before checking for other changes.
+
+Offline Python syntax and full self-tests pass. GitHub APK build and Android emulator checks have not yet been confirmed; strict compiled-resource semantic validation remains the release gate.
