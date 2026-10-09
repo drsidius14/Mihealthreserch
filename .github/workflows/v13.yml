@@ -181,6 +181,14 @@ jobs:
             --out output/XiaomiHealthResearch_1.4.6_RU_V16.apk work/aligned.apk
           test -s output/XiaomiHealthResearch_1.4.6_RU_V16.apk
 
+      - name: Upload built APK for device testing even if later audit fails
+        if: always() && hashFiles('output/XiaomiHealthResearch_1.4.6_RU_V16.apk') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: XiaomiHealthResearch_V16_Build
+          if-no-files-found: error
+          path: output/XiaomiHealthResearch_1.4.6_RU_V16.apk
+
       - name: Independent V16 APK, DEX, manifest, resource-reference, and translation audit
         shell: bash
         run: |
