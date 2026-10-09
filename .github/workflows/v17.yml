@@ -1,8 +1,8 @@
-name: Xiaomi Health Research V17 — audited Russian localization and Android 15 runtime
+name: Xiaomi Health Research V17.01 — Smali escape fix, audited Russian localization and Android 15 runtime
 
 on:
   push:
-    branches: [v17-build]
+    branches: [v17-build, "v17.01-build"]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +10,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: mihealthreserch-v16-${{ github.ref }}
+  group: mihealthreserch-v17.01-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -18,6 +18,8 @@ jobs:
     name: Independent forensic cross-check and audited APK build
     runs-on: ubuntu-24.04
     timeout-minutes: 70
+    outputs:
+      diagnostic_apk_available: ${{ steps.candidate_status.outputs.available }}
     steps:
       - name: Checkout V17 source
         uses: actions/checkout@v7
@@ -35,13 +37,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: V17 local safety self-tests
+      - name: V17.01 local safety self-tests
         shell: bash
         run: |
           set -euo pipefail
-          python -m py_compile repair/v13_*.py
+          python -m py_compile repair/v13_*.py repair/v17_01_*.py
           python repair/v13_selftest.py
           python repair/v13_localize_smali.py --self-test
+          python repair/v17_01_smali_codec_selftest.py
           python repair/v13_compare_smali.py --self-test
 
       - name: Prepare Android SDK tools
@@ -66,7 +69,7 @@ jobs:
           test -x "$BT/aapt2"
           command -v openssl
           command -v gh
-          echo 'V16_ANDROID_BUILD_TOOLS=PASS'
+          echo 'V17_01_ANDROID_BUILD_TOOLS=PASS'
 
       - name: Fetch and fingerprint exact original and V8 reference APKs
         shell: bash
@@ -79,7 +82,7 @@ jobs:
           echo 'c3bd649826febc1e40895e4f9e7d30b3a7b2b27b989cd5917cb560e72de3c5b0  work/v8.apk' | sha256sum -c -
           unzip -t work/original.apk >/dev/null
           unzip -t work/v8.apk >/dev/null
-          echo 'V16_SOURCE_APKS=EXACT'
+          echo 'V17_01_SOURCE_APKS=EXACT'
 
       - name: Pin and verify Apktool
         shell: bash
@@ -114,7 +117,7 @@ jobs:
           test -d work/decoded/original/smali
           cp -a work/decoded/original/smali work/baselines/original-smali
           find work/baselines/original-smali -type f -name '*.smali' -print -quit | grep -q .
-          echo 'V16_ORIGINAL_SMALI_BASELINE_CAPTURED=PASS'
+          echo 'V17_01_ORIGINAL_SMALI_BASELINE_CAPTURED=PASS'
 
       - name: Add reviewed RU locale overlay and translate visible hard-coded UI strings
         shell: bash
@@ -124,7 +127,7 @@ jobs:
           python repair/v13_localize_smali.py work/decoded/original/smali repair/v13_dex_translations.json work/dex-localization-audit.json | tee work/dex-localization.log
           python repair/v13_validate_ru_resource_dirs.py work/decoded/original work/ru-resource-dir-audit.json | tee work/ru-resource-dir-audit.log
           python repair/v13_coverage.py work/original-resources.dump work/translation-audit.json work/translation-coverage.json | tee work/translation-coverage.log
-          echo 'V16_TRANSLATION_COVERAGE_GATE=PASS'
+          echo 'V17_01_TRANSLATION_COVERAGE_GATE=PASS'
 
       - name: Rebuild compiled resources and check resource-table semantics
         shell: bash
@@ -142,7 +145,7 @@ jobs:
           # resource-table check above remains the enforced semantic gate.
           java -jar work/apktool.jar d -f -o work/decoded/compiled work/compiled/localized.apk
           python repair/v13_compare_decoded_tree.py work/decoded/original work/decoded/compiled work/translation-audit.json work/decoded-tree-comparison.json report-only | tee work/decoded-tree-comparison.log
-          echo 'V16_RESOURCE_SEMANTICS=PASS'
+          echo 'V17_01_RESOURCE_SEMANTICS=PASS'
 
       - name: Compare rebuilt original DEX against original Smali baseline
         shell: bash
@@ -150,7 +153,7 @@ jobs:
           set -euo pipefail
           java -jar work/apktool.jar d -f -o work/decoded/rebuilt work/compiled/localized.apk
           python repair/v13_compare_smali.py work/baselines/original-smali work/decoded/rebuilt/smali repair/v13_dex_translations.json work/smali-roundtrip-comparison.json | tee work/smali-roundtrip-comparison.log
-          echo 'V16_ORIGINAL_DEX_ONLY_REVIEWED_STRINGS_CHANGED=PASS'
+          echo 'V17_01_ORIGINAL_DEX_ONLY_REVIEWED_STRINGS_CHANGED=PASS'
 
       - name: Package original payload plus reviewed DEX strings and matching compiled resources
         shell: bash
@@ -166,28 +169,28 @@ jobs:
           "$BT/apksigner" sign \
             --ks work/v16-release.jks --ks-pass pass:changeit --key-pass pass:changeit \
             --ks-key-alias v16release --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-            --out output/XiaomiHealthResearch_1.4.6_RU_V17.apk work/aligned.apk
-          test -s output/XiaomiHealthResearch_1.4.6_RU_V17.apk
-          sha256sum output/XiaomiHealthResearch_1.4.6_RU_V17.apk | tee output/V17.sha256
-          cp work/translation-coverage.json output/V17_translation_coverage.json
+            --out output/XiaomiHealthResearch_1.4.6_RU_V17_01.apk work/aligned.apk
+          test -s output/XiaomiHealthResearch_1.4.6_RU_V17_01.apk
+          sha256sum output/XiaomiHealthResearch_1.4.6_RU_V17_01.apk | tee output/V17_01.sha256
+          cp work/translation-coverage.json output/V17_01_translation_coverage.json
 
       - name: Upload V17 candidate for diagnosis even if audit fails
-        if: always() && hashFiles('output/XiaomiHealthResearch_1.4.6_RU_V17.apk') != ''
+        if: always() && hashFiles('output/XiaomiHealthResearch_1.4.6_RU_V17_01.apk') != ''
         uses: actions/upload-artifact@v7
         with:
-          name: XiaomiHealthResearch_V17_Diagnostic_Build
+          name: XiaomiHealthResearch_V17_01_Diagnostic_Build
           if-no-files-found: error
           path: |
-            output/XiaomiHealthResearch_1.4.6_RU_V17.apk
-            output/V17.sha256
-            output/V17_translation_coverage.json
+            output/XiaomiHealthResearch_1.4.6_RU_V17_01.apk
+            output/V17_01.sha256
+            output/V17_01_translation_coverage.json
 
       - name: Independent V16 APK, DEX, manifest, resource-reference, and translation audit
         shell: bash
         run: |
           set -euo pipefail
           BT="$ANDROID_HOME/build-tools/35.0.0"
-          APK=output/XiaomiHealthResearch_1.4.6_RU_V17.apk
+          APK=output/XiaomiHealthResearch_1.4.6_RU_V17_01.apk
           "$BT/zipalign" -c -P 16 -v 4 "$APK"
           "$BT/apksigner" verify --verbose --print-certs "$APK" > work/v13-signature-verification.txt
           unzip -t "$APK" >/dev/null
@@ -195,15 +198,15 @@ jobs:
           "$BT/aapt2" dump badging "$APK" > work/v13-badging.txt
           python repair/v13_verify.py work/original.apk work/v8.apk work/compiled/localized.apk "$APK" work/v13-resources.dump work/v13-badging.txt work/translation-audit.json repair/v13_translations.json repair/v13_dex_translations.json work/dex-localization-audit.json | tee work/v13-verification.log
           python repair/v13_compare_resource_tables.py work/original-resources.dump work/v13-resources.dump work/translation-audit.json work/v13-resource-semantic-comparison.json strict | tee work/v13-resource-semantic-comparison.log
-          sha256sum "$APK" | tee output/V17.sha256
-          cp work/translation-coverage.json output/V17_translation_coverage.json
-          echo 'V17_STATIC_RELEASE_GATE=PASS'
+          sha256sum "$APK" | tee output/V17_01.sha256
+          cp work/translation-coverage.json output/V17_01_translation_coverage.json
+          echo 'V17_01_STATIC_RELEASE_GATE=PASS'
 
       - name: Upload forensic and localization diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: XiaomiHealthResearch_V16_Diagnostics
+          name: XiaomiHealthResearch_V17_01_Diagnostics
           if-no-files-found: warn
           path: |
             work/github_forensic_v10_7.json
@@ -241,17 +244,33 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: XiaomiHealthResearch_V17_Candidate
+          name: XiaomiHealthResearch_V17_01_Candidate
           if-no-files-found: error
           path: |
-            output/XiaomiHealthResearch_1.4.6_RU_V17.apk
-            output/V17.sha256
-            output/V17_translation_coverage.json
+            output/XiaomiHealthResearch_1.4.6_RU_V17_01.apk
+            output/V17_01.sha256
+            output/V17_01_translation_coverage.json
+
+      - name: Detect diagnostic APK availability for runtime smoke
+        id: candidate_status
+        if: always()
+        shell: bash
+        run: |
+          if [[ -s output/XiaomiHealthResearch_1.4.6_RU_V17_01.apk ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "A diagnostic APK was produced; Android runtime checks can run." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Android runtime checks skipped"
+              echo "No diagnostic APK was produced because the build stopped before packaging. See the failing step and forensic diagnostics artifact."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   android-15-onboarding-smoke:
     name: Android 15 x86_64 emulator — onboarding, basic mode, tab comparison
     needs: build-and-verify
-    if: always()
+    if: always() && needs.build-and-verify.outputs.diagnostic_apk_available == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -263,7 +282,7 @@ jobs:
       - name: Download V17 candidate for runtime diagnostics (even if static audit failed)
         uses: actions/download-artifact@v8
         with:
-          name: XiaomiHealthResearch_V17_Diagnostic_Build
+          name: XiaomiHealthResearch_V17_01_Diagnostic_Build
           path: artifact
 
       - name: Fetch exact original and V8 comparison APKs
@@ -288,7 +307,7 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim -camera-back none
           script: |
             set -euo pipefail
-            APK="$(find "$GITHUB_WORKSPACE/artifact" -type f -name 'XiaomiHealthResearch_1.4.6_RU_V17.apk' -print -quit)"
+            APK="$(find "$GITHUB_WORKSPACE/artifact" -type f -name 'XiaomiHealthResearch_1.4.6_RU_V17_01.apk' -print -quit)"
             ORIGINAL="$GITHUB_WORKSPACE/comparison/original.apk"
             V8APK="$GITHUB_WORKSPACE/comparison/v8.apk"
             test -n "$APK" && test -s "$APK"
@@ -386,7 +405,7 @@ jobs:
             adb shell am force-stop com.mi.healthresearch || true
             adb uninstall com.mi.healthresearch
 
-            # Candidate V16: require the reviewed Russian screen, decline the
+            # Candidate V17.01: require the reviewed Russian screen, decline the
             # optional consent and continue in basic mode to exercise a UI action.
             adb install -r "$APK"
             adb logcat -c
@@ -406,11 +425,11 @@ jobs:
             test -n "$PID"
             adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-after-basic-mode.txt"
             if grep -E 'Missing android.support.FILE_PROVIDER_PATHS meta-data|Unable to get provider com\.mi\.research\.upgrade\.download\.AppUpgradeProvider' "$GITHUB_WORKSPACE/runtime-report/logcat-after-basic-mode.txt"; then
-              echo 'V17_FILEPROVIDER_REGRESSION=FAIL'
+              echo 'V17_01_FILEPROVIDER_REGRESSION=FAIL'
               exit 1
             fi
             if grep -E 'FATAL EXCEPTION' "$GITHUB_WORKSPACE/runtime-report/logcat-after-basic-mode.txt" | grep -E 'com\.mi\.healthresearch|main'; then
-              echo 'V17_APP_CRASH=FAIL'
+              echo 'V17_01_APP_CRASH=FAIL'
               exit 1
             fi
             for LABEL in 'Устройства' 'Профиль'; do
@@ -419,7 +438,7 @@ jobs:
               COORDS="$(python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$CURRENT_UI" tap "$LABEL" 2>/dev/null || true)"
               read -r TX TY <<< "$COORDS"
               if [[ -z "${TX:-}" || -z "${TY:-}" ]]; then
-                echo "V16_TAB_TAP_TARGET_MISSING=$LABEL" >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt"
+                echo "V17_01_TAB_TAP_TARGET_MISSING=$LABEL" >> "$GITHUB_WORKSPACE/runtime-report/tab-content-summary.txt"
                 continue
               fi
               adb shell input tap "$TX" "$TY" || true
@@ -434,16 +453,16 @@ jobs:
               adb shell uiautomator dump /sdcard/v13-basic-mode.xml >/dev/null || true
               adb pull /sdcard/v13-basic-mode.xml "$GITHUB_WORKSPACE/runtime-report/basic-mode.xml" >/dev/null || true
             done
-            echo "V16_EMULATOR_PID=$PID"
-            echo 'V17_ANDROID15_RU_ONBOARDING_AND_BASIC_MODE=PASS'
-            echo 'V16_DEVICE_PROFILE_TABS_CAPTURED_FOR_COMPARISON=YES'
+            echo "V17_01_EMULATOR_PID=$PID"
+            echo 'V17_01_ANDROID15_RU_ONBOARDING_AND_BASIC_MODE=PASS'
+            echo 'V17_01_DEVICE_PROFILE_TABS_CAPTURED_FOR_COMPARISON=YES'
             echo 'NOTE: Emulator does not include Xiaomi Mi Fitness/account backend; tab content and auth can remain environment-dependent.' > "$GITHUB_WORKSPACE/runtime-report/limitations.txt"
 
       - name: Upload Android runtime diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: XiaomiHealthResearch_V17_Android15_Runtime_Report
+          name: XiaomiHealthResearch_V17_01_Android15_Runtime_Report
           if-no-files-found: warn
           path: runtime-report/
 
@@ -451,17 +470,17 @@ jobs:
         if: needs.build-and-verify.result != 'success'
         shell: bash
         run: |
-          echo 'V17_FINAL_RELEASE_GATE=FAIL because static build/audit job did not pass; diagnostic APK/logs are retained.'
+          echo 'V17_01_FINAL_RELEASE_GATE=FAIL because static build/audit job did not pass; diagnostic APK/logs are retained.'
           exit 1
 
       - name: Publish V17 APK only after static and Android runtime checks pass
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: XiaomiHealthResearch_V17
+          name: XiaomiHealthResearch_V17_01
           if-no-files-found: error
           path: |
-            artifact/XiaomiHealthResearch_1.4.6_RU_V17.apk
-            artifact/V17.sha256
-            artifact/V17_translation_coverage.json
+            artifact/XiaomiHealthResearch_1.4.6_RU_V17_01.apk
+            artifact/V17_01.sha256
+            artifact/V17_01_translation_coverage.json
             runtime-report/

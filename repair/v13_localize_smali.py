@@ -9,23 +9,9 @@ import re
 import sys
 from pathlib import Path
 
+from v17_01_smali_strings import decode_smali_literal, encode_smali_literal
+
 CONST_RE = re.compile(r'^(?P<prefix>\s*const-string(?:/jumbo)?\s+[^,]+,\s*)(?P<literal>"(?:\\.|[^"\\])*")(?P<tail>\s*(?:#.*)?)$')
-
-
-def decode_smali_literal(literal: str) -> str:
-    # Smali string escapes for const-string match JSON's common escapes; parsing JSON
-    # also decodes the \uXXXX form used by some baksmali versions.
-    try:
-        value = json.loads(literal)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f'unsupported Smali string literal {literal!r}: {exc}') from exc
-    if not isinstance(value, str):
-        raise ValueError('const-string operand is not a string')
-    return value
-
-
-def encode_smali_literal(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False)
 
 
 def _line_method_contexts(lines):
@@ -204,9 +190,16 @@ def self_test() -> None:
         result = localize(smali, mp, ap)
         final = (smali/'Example.smali').read_text(encoding='utf-8')
         assert result['status'] == 'PASS'
-        assert 'Перевод один' in final and 'Вторая строка' in final and 'UNRELATED' in final
-        assert 'Он сказал «Открыть»' in final and 'Отмена' in final
-        assert final.count('取消') == 1, 'short common labels must change only in scoped dialog method'
+        # V17.01 canonically escapes non-ASCII characters as \uXXXX; compare decoded
+        # string values, not raw UTF-8 appearance in a Smali source file.
+        decoded_values = [
+            decode_smali_literal(match.group('literal'))
+            for line in final.splitlines()
+            if (match := CONST_RE.match(line))
+        ]
+        assert 'Перевод один' in decoded_values and 'Вторая строка' in decoded_values and 'UNRELATED' in decoded_values
+        assert 'Он сказал «Открыть»' in decoded_values and 'Отмена' in decoded_values
+        assert decoded_values.count('取消') == 1, 'short common labels must change only in scoped dialog method'
         assert result['remaining_scoped_source_occurrences']['取消'] == 0
         # Opcodes/register count and all non-target lines remain untouched.
         assert final.count('const-string') == 7 and 'return-void' in final

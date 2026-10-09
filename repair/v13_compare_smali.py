@@ -5,11 +5,13 @@ import re
 import sys
 from pathlib import Path
 
+from v17_01_smali_strings import decode_smali_literal
+
 CONST_RE = re.compile(r'^(?P<prefix>\s*const-string(?:/jumbo)?\s+[^,]+,\s*)(?P<literal>"(?:\\.|[^"\\])*")(?P<tail>\s*(?:#.*)?)$')
 
 
 def decode(literal):
-    return json.loads(literal)
+    return decode_smali_literal(literal)
 
 
 def file_map(root: Path):
