@@ -1,0 +1,150 @@
+name: Full V16 recovery archive
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/full_recovery_archive.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout V16 and full available Git history
+        uses: actions/checkout@v4
+        with:
+          ref: v16-handoff
+          fetch-depth: 0
+          lfs: true
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Preserve Git history and repository metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p _recovery/git _recovery/meta _recovery/actions_artifacts
+          git bundle create _recovery/git/Mihealthreserch-all-refs.bundle --all
+          git bundle verify _recovery/git/Mihealthreserch-all-refs.bundle
+          git archive --format=tar.gz --prefix=Mihealthreserch-v16-handoff/ v16-handoff > _recovery/git/Mihealthreserch-v16-handoff.tar.gz
+          git log --all --decorate --date=iso-strict --pretty=fuller > _recovery/meta/git-log-all.txt
+          git branch -a -vv > _recovery/meta/branches.txt
+          git tag -n99 > _recovery/meta/tags.txt
+          git show-ref > _recovery/meta/show-ref.txt || true
+          git ls-files -s > _recovery/meta/index-files.txt
+          git ls-files > _recovery/meta/tracked-files.txt
+          git submodule status --recursive > _recovery/meta/submodules.txt 2>&1 || true
+          git lfs ls-files > _recovery/meta/lfs-files.txt 2>&1 || true
+          git ls-remote origin > _recovery/meta/remote-refs.txt
+          git rev-parse v16-handoff > _recovery/meta/v16-commit.txt
+
+      - name: Collect available GitHub Actions artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os,json,pathlib,urllib.request,hashlib
+          repo=os.environ["GH_REPOSITORY"]; token=os.environ["GH_TOKEN"]
+          dest=pathlib.Path("_recovery/actions_artifacts")
+          headers={"Authorization":f"Bearer {token}","Accept":"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"}
+          def get(url):
+              req=urllib.request.Request(url,headers=headers)
+              with urllib.request.urlopen(req,timeout=90) as r: return r.read()
+          runs=[]; page=1
+          while page<=10:
+              obj=json.loads(get(f"https://api.github.com/repos/{repo}/actions/runs?per_page=100&page={page}"))
+              part=obj.get("workflow_runs",[]); runs.extend(part)
+              if len(part)<100: break
+              page+=1
+          (dest/"workflow-runs.json").write_text(json.dumps(runs,ensure_ascii=False,indent=2),encoding="utf-8")
+          index=[]
+          for run in runs:
+              try:
+                  obj=json.loads(get(f"https://api.github.com/repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100"))
+                  artifacts=obj.get("artifacts",[])
+              except Exception as e:
+                  index.append({"run_id":run["id"],"error":str(e)}); continue
+              for a in artifacts:
+                  item={"run_id":run["id"],"run_url":run.get("html_url"),"artifact_id":a.get("id"),"name":a.get("name"),"expired":a.get("expired",False)}
+                  if a.get("expired"):
+                      index.append(item); continue
+                  try:
+                      raw=get(a["archive_download_url"])
+                      safe="".join(c if c.isalnum() or c in "._-" else "_" for c in (a.get("name") or "artifact"))
+                      target=dest/f"run_{run['id']}_artifact_{a['id']}_{safe}.zip"
+                      target.write_bytes(raw)
+                      item.update({"file":target.name,"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()})
+                  except Exception as e: item["download_error"]=str(e)
+                  index.append(item)
+          (dest/"artifact-index.json").write_text(json.dumps(index,ensure_ascii=False,indent=2),encoding="utf-8")
+          print(f"Runs indexed: {len(runs)}; artifact entries: {len(index)}")
+          PY
+
+      - name: Build file inventory, links and recovery instructions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib,hashlib,json,datetime,subprocess
+          root=pathlib.Path("."); out=pathlib.Path("_recovery/meta")
+          excluded={".git","_recovery"}
+          files=[]; links=[]
+          for p in sorted(root.rglob("*")):
+              if not p.is_file() or any(x in excluded for x in p.parts): continue
+              data=p.read_bytes()
+              files.append({"path":p.as_posix(),"size":len(data),"sha256":hashlib.sha256(data).hexdigest()})
+              if p.suffix.lower() in {".md",".txt",".yml",".yaml",".json",".toml",".ini",".gradle",".kts",".xml",".properties",".sh",".py",".bat",".ps1"}:
+                  for n,line in enumerate(data.decode("utf-8","ignore").splitlines(),1):
+                      if "http://" in line or "https://" in line or "github.com/" in line or "actions/runs/" in line:
+                          links.append(f"{p.as_posix()}:{n}:{line.strip()}")
+          (out/"file-inventory.json").write_text(json.dumps(files,ensure_ascii=False,indent=2),encoding="utf-8")
+          (out/"file-inventory.txt").write_text("\n".join(f'{x["sha256"]}  {x["size"]:>12}  {x["path"]}' for x in files)+"\n",encoding="utf-8")
+          (out/"cross-links.txt").write_text("\n".join(links)+"\n",encoding="utf-8")
+          (out/"build-info.json").write_text(json.dumps({"utc":datetime.datetime.now(datetime.timezone.utc).isoformat(),"repository":"drsidius14/Mihealthreserch","base_branch":"v16-handoff","commit":subprocess.check_output(["git","rev-parse","v16-handoff"],text=True).strip()},ensure_ascii=False,indent=2),encoding="utf-8")
+          (pathlib.Path("_recovery/README_RECOVERY_RU.md")).write_text(
+            "# MiHealthResearch — восстановление с нуля\n\nОтправная точка — ветка `v16-handoff`. Архив содержит snapshot проекта, доступную Git-историю/refs в bundle, инвентаризацию SHA-256, найденные ссылки и доступные неистёкшие артефакты GitHub Actions. Проверьте `meta/file-inventory.txt`, `meta/cross-links.txt` и `actions_artifacts/artifact-index.json`. Файлы вне Git и недоступные/истёкшие артефакты не могут быть включены автоматически.\n",
+            encoding="utf-8")
+          base=pathlib.Path("_recovery")
+          rows=[f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.as_posix()}" for p in sorted(base.rglob("*")) if p.is_file() and p.name!="sha256-manifest.txt"]
+          (base/"sha256-manifest.txt").write_text("\n".join(rows)+"\n",encoding="utf-8")
+          PY
+
+      - name: Package and validate one ZIP in GitHub cloud
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib,zipfile,hashlib
+          out=pathlib.Path("MiHealthResearch_FULL_RECOVERY_V16.zip")
+          with zipfile.ZipFile(out,"w",zipfile.ZIP_DEFLATED,compresslevel=6,allowZip64=True) as z:
+              for p in sorted(pathlib.Path(".").rglob("*")):
+                  if p.is_file() and ".git" not in p.parts and p != out and p.name != out.name+".sha256":
+                      z.write(p,p.as_posix())
+          with zipfile.ZipFile(out) as z:
+              bad=z.testzip()
+              if bad: raise SystemExit(f"ZIP CRC failure: {bad}")
+              names=set(z.namelist())
+              required=["_recovery/git/Mihealthreserch-all-refs.bundle","_recovery/meta/file-inventory.json","_recovery/actions_artifacts/artifact-index.json"]
+              missing=[n for n in required if n not in names]
+              if missing: raise SystemExit(f"Missing required archive entries: {missing}")
+          pathlib.Path("MiHealthResearch_FULL_RECOVERY_V16.zip.sha256").write_text(hashlib.sha256(out.read_bytes()).hexdigest()+"  "+out.name+"\n",encoding="utf-8")
+          print(f"ZIP validated: {out.stat().st_size} bytes")
+          PY
+
+      - name: Publish archive as GitHub Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiHealthResearch_FULL_RECOVERY_V16
+          path: |
+            MiHealthResearch_FULL_RECOVERY_V16.zip
+            MiHealthResearch_FULL_RECOVERY_V16.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
