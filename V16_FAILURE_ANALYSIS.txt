@@ -1,0 +1,35 @@
+V15 GitHub Actions failure analysis
+
+Run: https://github.com/drsidius14/Mihealthreserch/actions/runs/37922250556
+Commit: 43f4f50c0621df3bd7a5b49b93cdd04f5c596fe4
+
+Observed facts from the job log
+- Steps 1–12 passed, including the revised V15 localization and critical onboarding consent strings.
+- In the resource-rebuild step, Apktool 3.0.3 invoked aapt2.
+- aapt2 emitted `invalid configuration 'ru-bo-rCN'` for `res/values-ru-bo-rCN/strings.xml` and `invalid configuration 'ru-ug-rCN'` for `res/values-ru-ug-rCN/strings.xml`, then returned exit code 1.
+- APK packaging, independent APK verification, candidate upload and Android 15 emulator validation were skipped. Only the diagnostics artifact was uploaded.
+
+Root cause
+The router's `language_for_part()` consulted a fixed set of language codes that omitted Tibetan `bo` and Uyghur `ug`. The original decoded tree has source-locale directories such as `values-bo-rCN` and `values-ug-rCN`. Those were mistakenly treated as non-locale qualifiers and prefixed with `values-ru-`, producing invalid double-language directories. The failed diagnostic audit showed 208 translated entries in each invalid directory.
+
+Independent defects revealed by the same audit
+- The coverage parser required the word `PUBLIC` in every aapt2 resource header. The actual original resource dump contains headers without that token, so the old report said 0 default Chinese strings and 0% coverage while still passing. V16 accepts both forms and the same saved dump then reports 1,227 default CJK strings and 1,136 translated keys (92.6% before the placeholder correction).
+- The placeholder pattern allowed the space flag for `%s`; Java Formatter rejects `% s`. This falsely skipped `sport_run_rate_increase_suggestion` even though the reviewed Russian translation has no valid formatting placeholder to preserve.
+- The workflow's artifact/APK labels remained V13 after applying V15, which could mislead the operator when selecting an artifact.
+
+V16 response
+- Use Android’s documented two-letter legacy locale syntax / BCP-47 syntax, route source locales to valid Russian qualifier directories, preserve `car` as UI-mode qualifier, and keep MCC/MNC before the locale qualifier (e.g. `values-mcc460-zh-rCN-sw600dp` → `values-mcc460-ru-sw600dp`).
+- Audit all generated Russian value-directory qualifiers before invoking aapt2.
+- Add positive and negative regression tests for the exact invalid directories.
+- Correct coverage parsing and invalid-placeholder handling; test real syntax, not only string presence.
+- Make workflow and artifacts say V16 while using the already configured branch/workflow in place.
+
+Remaining release gate
+This source-level repair cannot prove that aapt2 rebuilds the whole resource table or that Android accepts the final APK. GitHub must execute the workflow; release requires strict resource semantic comparison, APK/DEX/manifest/resource-reference checks, apksigner verification, and successful Android 15 install/launch/onboarding/basic-mode validation.
+
+Authoritative references consulted
+- Android resource qualifier grammar, locale syntax and qualifier ordering: https://developer.android.com/guide/topics/resources/providing-resources
+- Android string resources: formatting placeholders and escaped HTML payloads: https://developer.android.com/guide/topics/resources/string-resource
+- Apktool CLI build/decode behavior: https://apktool.org/docs/cli-parameters/
+- Android zipalign: 16 KiB native-library alignment; must run before apksigner: https://developer.android.com/tools/zipalign
+- Android apksigner: signature verification and rule that post-signing APK changes invalidate signatures: https://developer.android.com/tools/apksigner

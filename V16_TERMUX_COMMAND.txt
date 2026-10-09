@@ -1,0 +1,5 @@
+One complete command for Termux after downloading XiaomiHealthResearch_V16_FINAL.zip to Download:
+
+( ZIP="$HOME/storage/downloads/XiaomiHealthResearch_V16_FINAL.zip"; test -s "$ZIP" && DEST="$HOME/v16-final-fix-$(date +%Y%m%d%H%M%S)-$RANDOM" && mkdir -p "$DEST" && unzip -oq "$ZIP" -d "$DEST" && bash "$DEST/apply_v16.sh" "$HOME/Mihealthreserch" ) && { echo 'V16: локальные проверки и отправка завершены'; } || { rc=$?; echo "V16: команда завершилась с ошибкой, код $rc"; }; read -r -p 'Нажми Enter, чтобы оставить окно Termux открытым... ' _
+
+The command does not compile the APK inside Termux. It applies the patch, runs local Python syntax/regression tests, and pushes one commit to v13-build. GitHub Actions performs the Android resource rebuild, APK packaging/signing, strict static checks and Android 15 emulator tests.

@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from v13_compare_resource_tables import normalize_value
 from v13_restore_attribute_formats import main as restore_attribute_formats
+from v13_localize import target_values_dir, language_for_part, placeholder_signature
 
 CRITICAL = {
  'app_name':'Исследование здоровья Xiaomi',
@@ -21,6 +22,37 @@ CRITICAL = {
 
 def main():
     translations=json.loads((Path(__file__).with_name('v13_translations.json')).read_text(encoding='utf-8'))
+    # Android locale routing must recognize valid ISO language tags beyond the short allow-list.
+    assert language_for_part('bo') == 'bo'
+    assert language_for_part('ug') == 'ug'
+    assert language_for_part('b+bo+CN') == 'bo'
+    assert target_values_dir('values-bo-rCN') == 'values-ru'
+    assert target_values_dir('values-ug-rCN') == 'values-ru'
+    assert target_values_dir('values-zh-rCN') == 'values-ru'
+    assert target_values_dir('values-b+bo+CN') == 'values-ru'
+    assert target_values_dir('values-night') == 'values-ru-night'
+    assert target_values_dir('values-sw600dp-land') == 'values-ru-sw600dp-land'
+    # `car` is an Android UI-mode qualifier; do not mistake it for the obscure
+    # ISO 639-3 language code and erase a valid configuration dimension.
+    assert language_for_part('car') is None
+    assert language_for_part('abc') is None
+    assert language_for_part('b+bo+CN') == 'bo'
+    assert target_values_dir('values-car') == 'values-ru-car'
+    assert target_values_dir('values-mcc460-zh-rCN-sw600dp') == 'values-mcc460-ru-sw600dp'
+    assert target_values_dir('values-mcc310-night') == 'values-mcc310-ru-night'
+    assert target_values_dir('values-night-car') == 'values-ru-night-car'
+    assert target_values_dir('values-ru') is None
+    assert target_values_dir('values-ru-rRU') is None
+    # `% s` is invalid for Java Formatter string conversions; it must not be treated as a required placeholder.
+    fake = ET.fromstring('<string name="format">Рост составил 10% s за неделю</string>')
+    assert not placeholder_signature(fake), placeholder_signature(fake)
+    valid = ET.fromstring('<string name="format">%1$s — %2$d%%</string>')
+    assert placeholder_signature(valid) == {'%1$s': 1, '%2$d': 1, '%%': 1}
+    datefmt = ET.fromstring('<string name="format">Year %1$tY</string>')
+    assert placeholder_signature(datefmt) == {'%1$tY': 1}
+    prose = ET.fromstring('<string name="format">10% increase; more than 5% is unusual</string>')
+    assert not placeholder_signature(prose), placeholder_signature(prose)
+
     v=translations['hospital_bloodpressure_abnormal_from_device']
     assert '%1s' in v and 'Источник:' in v
     assert normalize_value('(file) res/aB.webp type=drawable') == normalize_value('(file) res/drawable-xxhdpi/about_img.webp type=drawable')
@@ -34,7 +66,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="v13-coverage-gate-") as td:
         work=Path(td); dump=work/"resources.dump"; audit=work/"audit.json"; report=work/"coverage.json"
         dump.write_text("\n".join([
-            "resource 0x7f010001 string/app_name PUBLIC", '      () "小米健康研究"',
+            "resource 0x7f010001 string/app_name", '      () "小米健康研究"',
             "resource 0x7f010002 string/library_label PUBLIC", '      () "设置"',
         ])+"\n",encoding="utf-8")
         critical={"app_name","onboarding_app_name","onboarding_welcome_use","onboarding_slogan",
@@ -43,15 +75,27 @@ def main():
         audit.write_text(json.dumps({"keys_written":sorted(critical)}),encoding="utf-8")
         coverage_main(str(dump),str(audit),str(report))
         coverage=json.loads(report.read_text(encoding="utf-8"))
+        assert coverage["default_chinese_strings"] == 2, coverage
+        assert coverage["translated_chinese_keys"] == 1, coverage
         assert coverage["coverage_ratio"] < 0.90 and coverage["coverage_gate"] == "diagnostic_only"
         audit.write_text(json.dumps({"keys_written":["app_name"]}),encoding="utf-8")
         try:
             coverage_main(str(dump),str(audit),str(report))
         except SystemExit as exc:
-            assert "V13_CRITICAL_RU_UI_KEYS_MISSING" in str(exc)
+            assert "V16_CRITICAL_RU_UI_KEYS_MISSING" in str(exc)
         else:
             raise AssertionError("missing critical Russian UI keys must fail")
-    print("V13_COVERAGE_DIAGNOSTIC_AND_CRITICAL_UI_GATE=PASS")
+        empty_dump=work/"empty.dump"; empty_dump.write_text("no string entries\n",encoding="utf-8")
+        empty_report=work/"empty-coverage.json"
+        try:
+            coverage_main(str(empty_dump),str(audit),str(empty_report))
+        except SystemExit as exc:
+            assert "V16_COVERAGE_PARSER_FOUND_ZERO_DEFAULT_CJK_STRINGS" in str(exc)
+            assert empty_report.is_file()
+            assert json.loads(empty_report.read_text(encoding="utf-8"))["coverage_parser_found_cjk_strings"] is False
+        else:
+            raise AssertionError("coverage parser must not silently pass an empty input")
+    print("V16_COVERAGE_DIAGNOSTIC_AND_CRITICAL_UI_GATE=PASS")
 
     # Restore enum/flags format masks from the original compiled resource dump,
     # the exact V10.7 regression that the strict table gate must not overlook.
@@ -125,15 +169,47 @@ def main():
         lines.append('<string name="onboarding_privacy_tips_xieyi"> &lt;a href="%1$s"&gt;《小米健康研究用户协议》&lt;/a&gt;</string>')
         lines.append('<string name="common_am" translatable="false">上午</string>')
         lines.append('<string name="common_pm">%1$s下午</string>')
+        lines.append('<string name="sport_run_rate_increase_suggestion">建议跑量增加的上限不超过前一周的10% s</string>')
         lines.append('</resources>')
         base_xml='\n'.join(lines)+'\n'; source=values/'strings.xml'; source.write_text(base_xml,encoding='utf-8')
-        tr=work/'translations.json'; translations['common_pm']='下午'; tr.write_text(json.dumps(translations,ensure_ascii=False,indent=2),encoding='utf-8')
+        translations['common_pm']='下午'
+        translations['bo_only_translation_test']='Русский текст из bo'
+        translations['ug_only_translation_test']='Русский текст из ug'
+        translations['car_only_translation_test']='Русский текст для режима автомобиля'
+        translations['mcc_only_translation_test']='Русский текст для MCC-квалификатора'
+        for locale_dir, key, source_text in [
+            ('values-bo-rCN','bo_only_translation_test','藏文源文本'),
+            ('values-ug-rCN','ug_only_translation_test','维吾尔文源文本'),
+            ('values-car','car_only_translation_test','汽车模式资源测试'),
+            ('values-mcc460-zh-rCN-sw600dp','mcc_only_translation_test','移动国家码语言资源测试'),
+        ]:
+            loc = root/'res'/locale_dir; loc.mkdir(parents=True, exist_ok=True)
+            (loc/'locale_only.xml').write_text('<resources><string name="'+key+'">'+source_text+'</string></resources>',encoding='utf-8')
+        tr=work/'translations.json'; tr.write_text(json.dumps(translations,ensure_ascii=False,indent=2),encoding='utf-8')
         audit=work/'audit.json'
         proc=subprocess.run([sys.executable,str(Path(__file__).with_name('v13_localize.py')),str(root),str(tr),str(audit)],capture_output=True,text=True)
         if proc.returncode:
             raise AssertionError('V13 localizer fixture failed:\n'+proc.stdout+'\n'+proc.stderr)
         data=json.loads(audit.read_text(encoding='utf-8'))
         assert set(CRITICAL)==set(data['critical_keys_written']), data.get('critical_keys_written')
+        assert not any(x.get('reason') == 'unsupported_rich_xml_shape' for x in data['skipped_rich_xml']), data['skipped_rich_xml']
+        assert not any(x.get('key') == 'sport_run_rate_increase_suggestion' for x in data['skipped_rich_xml']), data['skipped_rich_xml']
+        assert 'sport_run_rate_increase_suggestion' in data['keys_written'], data['skipped_rich_xml']
+        locale_only = ET.parse(root/'res'/'values-ru'/'locale_only.xml').getroot()
+        assert {e.attrib.get('name') for e in locale_only} == {'bo_only_translation_test','ug_only_translation_test'}
+        car_locale_only = ET.parse(root/'res'/'values-ru-car'/'locale_only.xml').getroot()
+        assert {e.attrib.get('name') for e in car_locale_only} == {'car_only_translation_test'}
+        mcc_locale_only = ET.parse(root/'res'/'values-mcc460-ru-sw600dp'/'locale_only.xml').getroot()
+        assert {e.attrib.get('name') for e in mcc_locale_only} == {'mcc_only_translation_test'}
+        validator = Path(__file__).with_name('v13_validate_ru_resource_dirs.py')
+        valid = subprocess.run([sys.executable,str(validator),str(root),str(work/'ru-dirs.json')],capture_output=True,text=True)
+        assert valid.returncode==0,valid.stdout+valid.stderr
+        # Negative test: the exact failure observed in GitHub must be caught before aapt2.
+        invalid_dirs = [root/'res'/'values-ru-bo-rCN', root/'res'/'values-ru-ug-rCN']
+        for d in invalid_dirs: d.mkdir(parents=True)
+        invalid = subprocess.run([sys.executable,str(validator),str(root),str(work/'bad-ru-dirs.json')],capture_output=True,text=True)
+        assert invalid.returncode!=0 and 'values-ru-bo-rCN' in invalid.stdout and 'values-ru-ug-rCN' in invalid.stdout, invalid.stdout+invalid.stderr
+        for d in invalid_dirs: d.rmdir()
         ru_xml=ET.parse(root/'res'/'values-ru'/'strings.xml').getroot()
         privacy=next(e for e in ru_xml if e.attrib.get('name')=='onboarding_privacy_tips_2')
         payload=privacy.find('Data')
@@ -190,6 +266,13 @@ def main():
     code=Path(__file__).with_name('v13_localize.py').read_text(encoding='utf-8')
     assert 'mandatory_ru_overlay_for_translatable_false_source' in code
     assert 'V13_LOCALIZATION_FAILURE_AUDIT=' in code
+    print('V16_ANDROID_LANGUAGE_QUALIFIER_ROUTING=PASS')
+    print('V16_ANDROID_CAR_MODE_QUALIFIER_PRESERVED=PASS')
+    print('V16_ANDROID_MCC_QUALIFIER_ORDER_PRESERVED=PASS')
+    print('V16_INVALID_RU_DIRECTORY_NEGATIVE_TEST=PASS')
+    print('V16_RESOURCE_COVERAGE_PARSER_PUBLIC_AND_NONPUBLIC=PASS')
+    print('V16_EMPTY_COVERAGE_PARSER_FAILS_CLOSED=PASS')
+    print('V16_JAVA_FORMATTER_PLACEHOLDER_VALIDATION=PASS')
     print('V13_PLACEHOLDER_REPAIR=PASS')
     print('V13_RESOURCE_FILE_TYPE_PRESERVATION=PASS')
     print('V13_ANY_ATTR_NORMALIZATION=PASS')
@@ -204,4 +287,15 @@ def main():
     print('V13_PLACEHOLDER_MISMATCH_FAILSAFE=PASS')
     print('V13_FAILURE_AUDIT_PERSISTENCE=PASS')
     print('V13_ANDROID_UI_PROBE=PASS')
+    # Release pipeline must keep native-library alignment compatible with 16 KiB pages,
+    # and alignment must be re-verified on the signed artifact.
+    workflow = Path(__file__).resolve().parents[1] / '.github' / 'workflows' / 'v13.yml'
+    if workflow.is_file():
+        text = workflow.read_text(encoding='utf-8')
+        assert 'zipalign" -f -P 16 -v 4' in text
+        assert 'zipalign" -c -P 16 -v 4' in text
+        assert text.index('zipalign" -f -P 16 -v 4') < text.index('apksigner" sign')
+        assert text.index('apksigner" sign') < text.index('apksigner" verify')
+        print('V16_SIGNING_ALIGNMENT_ORDER_AND_16K_NATIVE_ALIGNMENT=PASS')
+
 if __name__=='__main__': main()

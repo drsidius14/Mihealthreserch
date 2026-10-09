@@ -1,0 +1,22 @@
+V16 CHANGELOG — fixes from the actual failed V15 GitHub Actions run
+
+Confirmed blocking failure
+- Run 37922250556 (commit 43f4f50c0621df3bd7a5b49b93cdd04f5c596fe4) passed checkout, Python self-tests, Android SDK setup, exact APK fingerprints, forensic comparison, Apktool verification, original decoding, localization, and the critical onboarding gate.
+- The Apktool resource rebuild failed because aapt2 rejected directories `values-ru-bo-rCN` and `values-ru-ug-rCN` as invalid configurations.
+- `language_for_part()` used a short allow-list that omitted the valid Android language codes `bo` and `ug`. The router therefore treated those locale segments as ordinary qualifiers and emitted the invalid names. Packaging, static APK verification and Android emulator testing were skipped.
+
+Fixes
+1. Recognize generic two/three-letter Android language qualifiers and BCP-47 `b+...` tags rather than relying on the incomplete locale allow-list. Both `values-bo-rCN` and `values-ug-rCN` now route to `values-ru` while non-locale qualifiers remain intact.
+2. Reject malformed region-only source qualifiers rather than manufacturing invalid output directories.
+3. Add an explicit pre-aapt2 gate to audit all `values-ru*` directories, with a negative test for the exact observed `values-ru-bo-rCN` failure.
+4. Fix translation-coverage parsing: aapt2's resource headers do not always include `PUBLIC`; the old parser silently reported zero Chinese strings and a false 0% coverage. V16 parses public and non-public entries and fails if it finds zero default CJK strings.
+5. Fix a placeholder-parser false positive: `% s` is not a valid Java Formatter string conversion (Java throws `FormatFlagsConversionMismatchException`). The old regex treated it as a required placeholder and skipped `sport_run_rate_increase_suggestion`. V16 excludes invalid flags for string/character/general conversions and has regression tests for valid `%1$s`, `%2$d`, and `%%` tokens.
+6. Version the CI display name, candidate/final artifacts, APK filename and checksum as V16, while retaining the existing `.github/workflows/v13.yml` path and `v13-build` branch to avoid duplicate workflow runs.
+7. Harden the Termux applicator: it checks unexpected local changes before cleanup, preserves only known timestamped backups, verifies Python syntax, runs self-tests, checks staged diffs, and pushes only the expected patch files.
+
+Verification in this package
+- `python -m py_compile repair/v13_*.py` passed.
+- `python repair/v13_selftest.py` passed, including new locale routing, invalid-directory rejection, coverage parsing and Java Formatter checks.
+- The actual APK build and Android 15 runtime test cannot be claimed until the new GitHub Actions run completes successfully.
+
+Additional qualifier-hardening: legacy Android locales are restricted to the documented two-letter code shape; `car` UI-mode and the required MCC/MNC-before-locale qualifier ordering are covered by regression fixtures.

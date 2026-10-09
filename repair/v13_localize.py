@@ -6,13 +6,18 @@ from copy import deepcopy
 from pathlib import Path
 
 CJK_RE = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff]')
-LOCALE_CODES = {
-    'af','am','ar','bg','bn','ca','cs','da','de','el','en','es','fa','fi','fr','he','hi','hr','hu',
-    'id','in','it','iw','ja','ko','ms','nb','nl','no','pl','pt','ro','ru','sk','sl','sr','sv','sw',
-    'ta','th','tr','uk','ur','vi','zh'
-}
-LANGUAGE_SEGMENT_RE = re.compile(r'^(?:[a-z]{2,3}|b\+[A-Za-z0-9+]+)$')
-PLACEHOLDER_RE = re.compile(r'%(?:\d+\$)?[-+# 0,(]*\d*(?:\.\d+)?[a-zA-Z%]')
+# Android's legacy locale qualifier uses a two-letter ISO 639-1 language code;
+# BCP-47 locale qualifiers use the explicit `b+...` form. Do not classify 3-letter
+# UI-mode/resource qualifiers such as `car` as languages.
+LANGUAGE_SEGMENT_RE = re.compile(r'^(?:[a-z]{2}|b\+[A-Za-z0-9+]+)$')
+# Java Formatter conversions used by Android string resources. Date/time uses a
+# two-character t/T + suffix conversion; invalid printf-looking prose is ignored.
+FORMAT_SPEC_RE = re.compile(
+    r'%(?P<arg>\d+\$)?(?P<flags>[-+# 0,(<]*)?(?P<width>\d+)?'
+    r'(?:\.(?P<precision>\d+))?'
+    r'(?:(?P<date>[tT])(?P<dateconv>[HIklMSLNpzZsQBbhAaCYyjmdeRTrDFc])'
+    r'|(?P<conv>[bBhHsScCdoxXeEfgGaAn%]))'
+)
 CRITICAL = {
     'app_name','onboarding_app_name','onboarding_welcome_use','onboarding_slogan',
     'onboarding_agree','onboarding_disagree_and_continue','onboarding_exit_app',
@@ -84,16 +89,31 @@ def chinese_present(text):
     return bool(CJK_RE.search(text or ''))
 
 def language_for_part(part):
-    if part in LOCALE_CODES:
-        return part
+    """Return a locale language code for any Android language qualifier.
+
+    Do not limit this to a short allow-list: APKs can contain valid Android
+    resource locales such as Tibetan (bo) and Uyghur (ug), even when the app
+    has no reviewed translations for those languages. Otherwise the locale
+    segment is mistaken for an unrelated qualifier and can leak into the new
+    values-ru-* directory name (for example, values-ru-bo-rCN, rejected by
+    aapt2).
+    """
+    if not LANGUAGE_SEGMENT_RE.fullmatch(part):
+        return None
     if part.startswith("b+"):
         bits = part.split("+")
-        if len(bits) > 1 and bits[1] in LOCALE_CODES:
-            return bits[1]
-    return None
+        if len(bits) > 1 and re.fullmatch(r"[A-Za-z]{2}", bits[1]):
+            return bits[1].lower()
+        return None
+    return part
 
 def target_values_dir(dirname):
-    """Route base and non-Russian locale resources into equivalent values-ru qualifiers."""
+    """Route source locale resources to valid Russian-qualified values directories.
+
+    Android requires MCC/MNC qualifiers before locale qualifiers. When converting
+    e.g. values-mcc460-zh-rCN-sw600dp, keep the MCC first and insert `ru` after it;
+    blindly prefixing `values-ru-` would create an invalid qualifier order.
+    """
     if dirname == 'values':
         return 'values-ru'
     if not dirname.startswith('values-'):
@@ -102,14 +122,30 @@ def target_values_dir(dirname):
     language_indexes = [i for i,p in enumerate(parts) if language_for_part(p)]
     if any(language_for_part(parts[i]) == 'ru' for i in language_indexes):
         return None  # Existing Russian resources are merge targets, never source data.
+
+    # MCC/MNC may legally precede the language qualifier and must remain before it.
+    prefix = []
+    prefix_indexes = set()
+    for i, part in enumerate(parts):
+        if re.fullmatch(r'(?:mcc\d{3}|mnc\d{2,3})', part):
+            if i == len(prefix_indexes):
+                prefix.append(part)
+                prefix_indexes.add(i)
+                continue
+        break
+
     if not language_indexes:
-        return 'values-ru-' + '-'.join(parts)
+        # A region (rUS/rCN/...) is only meaningful after a language qualifier.
+        if any(re.fullmatch(r'r[A-Z]{2}', p) for p in parts):
+            raise RuntimeError('INVALID_REGION_QUALIFIER_WITHOUT_LANGUAGE:' + dirname)
+
     remove = set(language_indexes)
     for i,p in enumerate(parts):
         if re.fullmatch(r'r[A-Z]{2}', p) and any(j < i for j in language_indexes):
             remove.add(i)
-    kept = [p for i,p in enumerate(parts) if i not in remove]
-    return 'values-ru' + (('-' + '-'.join(kept)) if kept else '')
+    suffix = [p for i,p in enumerate(parts) if i not in remove and i not in prefix_indexes]
+    routed = prefix + ['ru'] + suffix
+    return 'values-' + '-'.join(routed)
 
 def source_priority(dirname):
     if dirname == 'values':
@@ -130,11 +166,32 @@ def resource_key(elem):
 def all_text(elem):
     return ''.join(elem.itertext())
 
+def _valid_formatter_match(match):
+    """Reject flag/conversion combinations not accepted by Java Formatter.
+
+    In particular, `% s` is not a valid Java Formatter string conversion: the
+    space flag is numeric-only. Also avoid interpreting ordinary text such as
+    `% increase` as a format marker simply because the next word starts with an
+    ASCII letter. Date/time placeholders retain the complete `%tY`-style token.
+    """
+    flags = match.group('flags') or ''
+    conv = match.group('conv')
+    if match.group('date'):
+        return all(flag in '-<' for flag in flags)
+    if conv in 'sSbBhHcC':
+        return all(flag in '-<' for flag in flags)
+    if conv == '%':
+        return not match.group('arg') and all(flag == '-' for flag in flags) and not match.group('precision')
+    if conv == 'n':
+        return not match.group('arg') and not flags and not match.group('width') and not match.group('precision')
+    return True
+
 def placeholder_signature(elem):
     bits = [all_text(elem)]
     for node in elem.iter():
         bits.extend(node.attrib.values())
-    return Counter(PLACEHOLDER_RE.findall(' '.join(bits)))
+    text = ' '.join(bits)
+    return Counter(match.group(0) for match in FORMAT_SPEC_RE.finditer(text) if _valid_formatter_match(match))
 
 def set_first_text_leaf(elem, value):
     # Keep every XML tag and attribute (especially href targets), placing the

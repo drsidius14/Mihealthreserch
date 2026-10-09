@@ -2,7 +2,7 @@
 """Report translation coverage; enforce reviewed critical UI keys, not an arbitrary percentage."""
 import json,re,sys
 from pathlib import Path
-HEADER=re.compile(r'^\s*resource\s+0x[0-9a-fA-F]+\s+string/([^\s]+) PUBLIC')
+HEADER=re.compile(r'^\s*resource\s+0x[0-9a-fA-F]+\s+string/([^\s/]+)(?:\s+PUBLIC)?\s*$')
 VALUE=re.compile(r'^\s{6}\(([^)]*)\)\s+(.*)$')
 CJK=re.compile(r'[\u3400-\u9fff]')
 DELIBERATELY_UNTRANSLATED=('chinese_','earthly_','heavenly_','fmt_chinese_date')
@@ -17,17 +17,18 @@ def main(dump,audit_path,report_path):
     raw=v.group(2); m=re.search(r'"(.*)"(?: Data:.*)?$',raw); value=m.group(1) if m else raw
     if CJK.search(value): chinese.add(cur)
     cur=None
+ parser_found_cjk = bool(chinese)
  covered=sorted(chinese&done); missed=sorted(chinese-done)
  deliberate=[k for k in missed if k.startswith(DELIBERATELY_UNTRANSLATED)]
  user_visible_candidates=[k for k in missed if k not in deliberate]
  ratio=len(covered)/max(1,len(chinese))
- report={'default_chinese_strings':len(chinese),'translated_chinese_keys':len(covered),'coverage_ratio':ratio,'untranslated_keys':missed,'deliberately_untranslated_calendar_keys':deliberate,'untranslated_not_calendar':user_visible_candidates,'keys_written_total':len(done),'skipped_rich_xml':audit.get('skipped_rich_xml',[])}
+ report={'coverage_parser_found_cjk_strings':parser_found_cjk,'default_chinese_strings':len(chinese),'translated_chinese_keys':len(covered),'coverage_ratio':ratio,'untranslated_keys':missed,'deliberately_untranslated_calendar_keys':deliberate,'untranslated_not_calendar':user_visible_candidates,'keys_written_total':len(done),'skipped_rich_xml':audit.get('skipped_rich_xml',[])}
  Path(report_path).write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
- print('V13_DEFAULT_CJK_STRING_KEYS='+str(len(chinese)))
- print('V13_CJK_KEYS_TRANSLATED='+str(len(covered)))
- print('V13_CJK_TRANSLATION_COVERAGE_PERCENT='+f'{ratio*100:.1f}')
- print('V13_UNTRANSLATED_CJK_NON_CALENDAR='+str(len(user_visible_candidates)))
- print('V13_TRANSLATION_COVERAGE_REPORT='+report_path)
+ print('V16_DEFAULT_CJK_STRING_KEYS='+str(len(chinese)))
+ print('V16_CJK_KEYS_TRANSLATED='+str(len(covered)))
+ print('V16_CJK_TRANSLATION_COVERAGE_PERCENT='+f'{ratio*100:.1f}')
+ print('V16_UNTRANSLATED_CJK_NON_CALENDAR='+str(len(user_visible_candidates)))
+ print('V16_TRANSLATION_COVERAGE_REPORT='+report_path)
  # Coverage is a diagnostic metric, not a release gate: AndroidX/MIUIX and calendar
  # resources can remain intentionally untranslated without affecting the reviewed
  # app-owned UI. Critical consent/onboarding strings are enforced by v13_localize.py
@@ -40,8 +41,10 @@ def main(dump,audit_path,report_path):
  report['critical_ui_keys_missing']=missing_critical
  report['coverage_gate']='diagnostic_only'
  Path(report_path).write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
- if missing_critical: raise SystemExit('V13_CRITICAL_RU_UI_KEYS_MISSING='+','.join(missing_critical))
- print('V13_TRANSLATION_COVERAGE_GATE=PASS (diagnostic coverage; critical UI keys enforced)')
+ if not parser_found_cjk:
+  raise SystemExit('V16_COVERAGE_PARSER_FOUND_ZERO_DEFAULT_CJK_STRINGS')
+ if missing_critical: raise SystemExit('V16_CRITICAL_RU_UI_KEYS_MISSING='+','.join(missing_critical))
+ print('V16_TRANSLATION_COVERAGE_GATE=PASS (diagnostic coverage; critical UI keys enforced)')
 if __name__=='__main__':
  if len(sys.argv)!=4: raise SystemExit('usage: v13_coverage.py aapt2-resources.dump translation-audit.json coverage-report.json')
  main(*sys.argv[1:])
