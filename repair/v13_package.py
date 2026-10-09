@@ -93,7 +93,7 @@ def main(original, v8, compiled, out):
                     else:
                         zout.writestr(info, oz.read(name))
                     written.add(name)
-
+    
                 # In case original had no classes.dex entry (not expected), fail closed.
                 if "classes.dex" not in written:
                     raise SystemExit("ORIGINAL_APK_MISSING_CLASSES_DEX")

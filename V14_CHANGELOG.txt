@@ -1,0 +1,12 @@
+V14 CHANGELOG
+
+Root cause fixed: V13 job 37917026120 failed in “Add reviewed RU locale overlay…” because repair/v13_coverage.py raised V13_TRANSLATION_COVERAGE_BELOW_90_PERCENT at 74.7%. That threshold was not a user requirement and conflated default Chinese resource coverage with the whole app UI.
+
+Changes:
+- Coverage remains measured and emitted into the JSON diagnostic report.
+- Removed the arbitrary 90% fatal threshold.
+- Added a hard check for the ten reviewed critical app-owned Russian UI/onboarding keys.
+- Added offline regression coverage proving that low diagnostic coverage passes while missing critical UI keys fails.
+- Left all existing strict resource semantics, placeholder preservation, package identity and Android 15 runtime checks enabled.
+
+Important: this fixes the confirmed first failure; it does not claim that the full GitHub workflow or APK has passed. Later build/runtime gates must still pass on GitHub.

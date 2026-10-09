@@ -1,0 +1,5 @@
+Команда для Termux после скачивания XiaomiHealthResearch_V14_FINAL.zip в Download:
+
+cd ~/Mihealthreserch; unzip -o "$HOME/storage/downloads/XiaomiHealthResearch_V14_FINAL.zip" -d "$HOME/v14-final-fix" && bash "$HOME/v14-final-fix/apply_v14.sh" "$HOME/Mihealthreserch"; read -r -p 'Нажми Enter, чтобы оставить окно Termux открытым... ' _
+
+Скрипт проверяет чистоту рабочего дерева, обновляет существующую v13-build с origin/v13-build (не откатывается на v12), накладывает исправленные файлы, запускает py_compile и полный offline selftest, затем коммитит и отправляет изменения. При ошибке окно Termux остаётся открытым; никаких exit/logout в командной строке нет.

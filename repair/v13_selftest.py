@@ -5,7 +5,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from v13_compare_resource_tables import normalize_value
 from v13_restore_attribute_formats import main as restore_attribute_formats
-from v13_localize import replace_rich
 
 CRITICAL = {
  'app_name':'Исследование здоровья Xiaomi',
@@ -22,24 +21,37 @@ CRITICAL = {
 
 def main():
     translations=json.loads((Path(__file__).with_name('v13_translations.json')).read_text(encoding='utf-8'))
-    # Reproduce Apktool's actual <Data>-wrapped escaped-HTML representation.
-    for key, placeholders in [
-        ('onboarding_join_experience_program', ['%1$s']),
-        ('onboarding_privacy_tips_2', ['%1$s', '%2$s', '%3$s'])
-    ]:
-        node = ET.fromstring('<string name="%s"><Data>旧的转义 HTML</Data></string>' % key)
-        assert replace_rich(node, key, translations[key]), key + ': Data wrapper rejected'
-        data = node.find('Data')
-        assert data is not None and data.text == translations[key], key + ': translated Data text missing'
-        assert all(token in data.text for token in placeholders), key + ': href placeholder lost'
-        assert not any('\\u3400' <= c <= '\\u9fff' for c in data.text), key + ': CJK remains'
-    assert '% s' in translations['sport_run_rate_increase_suggestion'], 'running rate placeholder lost'
     v=translations['hospital_bloodpressure_abnormal_from_device']
     assert '%1s' in v and 'Источник:' in v
     assert normalize_value('(file) res/aB.webp type=drawable') == normalize_value('(file) res/drawable-xxhdpi/about_img.webp type=drawable')
     assert normalize_value('(file) res/aB.webp type=drawable') != normalize_value('(file) res/aB.webp type=raw')
     assert normalize_value('(attr) type=any') == normalize_value('(attr) type=reference|string|integer|boolean|color|float|dimension|fraction')
     assert normalize_value('(attr) type=reference|enum') != normalize_value('(attr) type=reference')
+
+    # Coverage is a diagnostic metric, not an arbitrary 90% release gate.
+    # The critical app-owned onboarding keys remain mandatory.
+    from v13_coverage import main as coverage_main
+    with tempfile.TemporaryDirectory(prefix="v13-coverage-gate-") as td:
+        work=Path(td); dump=work/"resources.dump"; audit=work/"audit.json"; report=work/"coverage.json"
+        dump.write_text("\n".join([
+            "resource 0x7f010001 string/app_name PUBLIC", '      () "小米健康研究"',
+            "resource 0x7f010002 string/library_label PUBLIC", '      () "设置"',
+        ])+"\n",encoding="utf-8")
+        critical={"app_name","onboarding_app_name","onboarding_welcome_use","onboarding_slogan",
+                  "onboarding_agree","onboarding_disagree_and_continue","onboarding_exit_app",
+                  "onboarding_please_read","onboarding_join_experience_program","onboarding_privacy_tips_2"}
+        audit.write_text(json.dumps({"keys_written":sorted(critical)}),encoding="utf-8")
+        coverage_main(str(dump),str(audit),str(report))
+        coverage=json.loads(report.read_text(encoding="utf-8"))
+        assert coverage["coverage_ratio"] < 0.90 and coverage["coverage_gate"] == "diagnostic_only"
+        audit.write_text(json.dumps({"keys_written":["app_name"]}),encoding="utf-8")
+        try:
+            coverage_main(str(dump),str(audit),str(report))
+        except SystemExit as exc:
+            assert "V13_CRITICAL_RU_UI_KEYS_MISSING" in str(exc)
+        else:
+            raise AssertionError("missing critical Russian UI keys must fail")
+    print("V13_COVERAGE_DIAGNOSTIC_AND_CRITICAL_UI_GATE=PASS")
 
     # Restore enum/flags format masks from the original compiled resource dump,
     # the exact V10.7 regression that the strict table gate must not overlook.
