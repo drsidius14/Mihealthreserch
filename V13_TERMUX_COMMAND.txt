@@ -1,0 +1,5 @@
+Одна команда для Termux после скачивания XiaomiHealthResearch_V13_SOURCE.zip в Download:
+
+cd ~/Mihealthreserch && test -z "$(git status --porcelain)" || { echo 'Рабочее дерево не чистое — сначала сохрани изменения'; exit 1; } && git fetch --no-tags origin v12-build && git checkout -B v13-build origin/v12-build && unzip -o "$HOME/storage/downloads/XiaomiHealthResearch_V13_SOURCE.zip" -d . && git add .github/workflows/v13.yml repair/v13_*.py repair/v13_translations.json V13_README.txt V13_LOG_REVIEW.txt V13_TERMUX_COMMAND.txt && python -m py_compile repair/v13_*.py && python repair/v13_selftest.py && rm -rf repair/__pycache__ && git add . && git commit -m "Build V13 with robust consent localization and stricter resource audits" && git push -u origin v13-build
+
+Команда сначала выполняет локальные тесты. Если они проходят, отправляет ветку v13-build и запускает GitHub Actions. APK публикуется только после прохождения строгих проверок и Android 15 runtime-теста.

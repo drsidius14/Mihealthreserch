@@ -1,0 +1,22 @@
+XIAOMI HEALTH RESEARCH — V12 FAILURE REVIEW / V13 REPAIR
+
+V12 run: https://github.com/drsidius14/Mihealthreserch/actions/runs/37862313252
+Commit: d5d16d3363d925ea334e78fa32a8edbe08a681e2
+
+VERIFIED V12 RESULT
+- The exact-original/V8 fingerprints, byte-level comparison, local-vs-GitHub forensic cross-check, Apktool pin, and pre-localization steps passed.
+- V12 placeholder self-tests passed. The previously reported V11 `%1s` omission was not the current failure.
+- Localization failed closed with `V12_CRITICAL_TRANSLATIONS_MISSING_FROM_BASE_OR_LOCALE_RESOURCES:onboarding_join_experience_program,onboarding_privacy_tips_2`. The translation JSON contains both keys.
+- The log does not identify the precise skip reason: V12 checks `translatable=false`, returns false for unsupported rich-XML layouts, and checks placeholders before a useful audit is written; the mandatory-key gate executes before audit persistence. Therefore it would be inaccurate to claim the GitHub run proved which branch skipped the resources.
+- No compiled APK or Android emulator validation was produced by V12. Its only uploaded artifact was diagnostics.
+
+CODE REVIEW FINDINGS FIXED IN V13
+1. Mandatory consent/onboarding keys now bypass only the translator-tool `translatable=false` filter; non-critical resources with that flag remain skipped. The runtime resource overlay and all href attributes are retained.
+2. Rich-link editing no longer rejects otherwise safe wrapper/annotation siblings solely because they are not direct `<a>` nodes. It keeps the XML tree and attributes, clears source-language text, places reviewed Russian labels into link text, preserves tails, then independently verifies placeholder signatures. Unexpected link counts or placeholder differences still fail closed and are audited.
+3. The localizer records critical source shapes, skip reasons, and an audit even when the hard gate fails. Diagnostics include the source file, root attributes, child tags, href values, and whether source text contains CJK.
+4. A new pre-build repair reads original `enum`/`flags` attribute formats from `aapt2` and restores them in decoded XML before rebuilding (for the known `expandState` enum-bit regression); it produces a separate audit. The strict resource file path normalizer also carries file extension and compiled file type, and refuses `reference|enum` -> `reference`.
+5. The independent final verifier checks Russian consent-link visible text and the exact `%1$s`, `%2$s`, `%3$s` placeholders in the compiled RU resource table.
+6. Offline self-tests now exercise the actual localizer on a realistic fixture with translatable=false mandatory strings, nested/wrapped links, noncritical translatable=false behavior, placeholder mismatch, untouched base XML, and audit persistence on failure.
+
+NOT CLAIMED
+The code fixes and local tests do not mean the GitHub APK build is already successful. The V13 branch is not pushed by this assistant connection (GitHub denied branch-creation permission). Run the supplied Termux command to push V13 source and trigger GitHub Actions; then use the actual run result. No APK is called final until the static and Android 15 runtime jobs pass.

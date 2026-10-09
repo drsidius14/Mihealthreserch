@@ -1,0 +1,384 @@
+name: Xiaomi Health Research V13 — forensic, Russian localization, two-stage validation
+
+on:
+  push:
+    branches: [v13-build]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: mihealthreserch-v13-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-verify:
+    name: Independent forensic cross-check and reproducible APK build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout V13 source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: V13 local safety self-tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile repair/v13_*.py
+          python repair/v13_selftest.py
+
+      - name: Prepare Android SDK tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_HOME ANDROID_SDK_ROOT="$ANDROID_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print 2>/dev/null | sort -V | tail -n 1 || true)"
+          fi
+          test -n "$SDKMANAGER" && test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          test -x "$ANDROID_HOME/platform-tools/adb"
+          test -x "$BT/zipalign"
+          test -x "$BT/apksigner"
+          test -x "$BT/aapt2"
+          command -v openssl
+          command -v gh
+          echo 'V13_ANDROID_BUILD_TOOLS=PASS'
+
+      - name: Fetch and fingerprint exact original and V8 reference APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work output
+          git fetch --no-tags origin v10-build:refs/remotes/origin/v10-build
+          git show origin/v10-build:input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk > work/original.apk
+          git show origin/v10-build:input/XiaomiHealthResearch_1.4.6_RU_V8.apk > work/v8.apk
+          echo '9e872f2d75e4ec1d509216d8caa998c2957d797c57b8ecc1ed8c92054f53c4bc  work/original.apk' | sha256sum -c -
+          echo 'c3bd649826febc1e40895e4f9e7d30b3a7b2b27b989cd5917cb560e72de3c5b0  work/v8.apk' | sha256sum -c -
+          unzip -t work/original.apk >/dev/null
+          unzip -t work/v8.apk >/dev/null
+          echo 'V13_SOURCE_APKS=EXACT'
+
+      - name: Download prior V10.7 artifact for independent local-vs-GitHub forensics
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p work/v107
+          gh run download 37853886225 --repo "$GITHUB_REPOSITORY" --name XiaomiHealthResearch_V10.7 --dir work/v107
+          V107="$(find work/v107 -type f -name 'XiaomiHealthResearch_1.4.6_RU_V10.7.apk' -print -quit)"
+          test -n "$V107" && test -s "$V107"
+          echo '5f3c9ea4eec8a7260324669fe8fe789f1f789c5de0ffb3fc34257407df00a92e  '"$V107" | sha256sum -c -
+          cp "$V107" work/v10.7.apk
+          unzip -t work/v10.7.apk >/dev/null
+          echo 'V13_V10_7_ARTIFACT=EXACT'
+
+      - name: Reproduce complete byte-level forensic comparison on GitHub
+        shell: bash
+        run: |
+          set -euo pipefail
+          python repair/v13_forensic.py work/original.apk work/v10.7.apk work/v8.apk work/github_forensic_v10_7.json | tee work/github-forensic.log
+          python repair/v13_compare_forensic_reports.py repair/reference_local_v10_7.json work/github_forensic_v10_7.json work/forensic-crosscheck.json | tee work/forensic-crosscheck.log
+          python repair/v13_dex_cjk_audit.py work/v8.apk work/dex-hardcoded-cjk-audit.json | tee work/dex-hardcoded-cjk-audit.log
+          echo 'V13_LOCAL_GITHUB_BYTE_FORENSICS=PASS'
+
+      - name: Pin and verify Apktool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/apktool work/decoded work/compiled
+          curl --location --fail --silent --show-error --retry 4 --retry-all-errors \
+            --connect-timeout 20 --max-time 240 \
+            -o work/apktool.jar \
+            https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+          test "$(stat -c '%s' work/apktool.jar)" -gt 10000000
+          echo 'dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  work/apktool.jar' | sha256sum -c -
+          java -jar work/apktool.jar --version | tee work/apktool-version.txt
+          grep -q '3.0.3' work/apktool-version.txt
+
+      - name: Decode original and record baseline resource semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          java -jar work/apktool.jar d -f -o work/decoded/original work/original.apk
+          "$BT/aapt2" dump resources work/original.apk > work/original-resources.dump
+          python repair/v13_restore_attribute_formats.py work/decoded/original work/original-resources.dump work/attribute-format-repair.json | tee work/attribute-format-repair.log
+          python repair/v13_extract_critical_sources.py work/decoded/original work/critical-source-shapes.json
+          "$BT/aapt2" dump badging work/original.apk > work/original-badging.txt
+          V107_DUMP="$(find work/v107 -type f -name 'resources-dump.txt' -print -quit)"
+          V107_AUDIT="$(find work/v107 -type f -name 'translation-audit.json' -print -quit)"
+          test -n "$V107_DUMP" && test -s "$V107_DUMP"
+          test -n "$V107_AUDIT" && test -s "$V107_AUDIT"
+          cp "$V107_DUMP" work/v10.7-resources.dump
+          cp "$V107_AUDIT" work/v10.7-translation-audit.json
+          python repair/v13_compare_resource_tables.py work/original-resources.dump work/v10.7-resources.dump work/v10.7-translation-audit.json work/v10.7-resource-semantic-comparison.json report-only | tee work/v10.7-resource-semantic-comparison.log
+          echo 'V13_ORIGINAL_DECODE_AND_V10_7_SEMANTIC_DIAGNOSIS=PASS'
+
+      - name: Add reviewed RU locale overlay without modifying base values or code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python repair/v13_localize.py work/decoded/original repair/v13_translations.json work/translation-audit.json | tee work/localization.log
+          python repair/v13_coverage.py work/original-resources.dump work/translation-audit.json work/translation-coverage.json | tee work/translation-coverage.log
+          echo 'V13_TRANSLATION_COVERAGE_GATE=PASS'
+
+      - name: Rebuild compiled resources and check resource-table semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          java -jar work/apktool.jar b -f work/decoded/original -o work/compiled/localized.apk
+          test -s work/compiled/localized.apk
+          unzip -t work/compiled/localized.apk >/dev/null
+          "$BT/aapt2" dump resources work/compiled/localized.apk > work/compiled-resources.dump
+          "$BT/aapt2" dump badging work/compiled/localized.apk > work/compiled-badging.txt
+          unzip -Z1 work/compiled/localized.apk | grep -Fx 'res/xml/appupgrade_provider_paths.xml'
+          python repair/v13_compare_resource_tables.py work/original-resources.dump work/compiled-resources.dump work/translation-audit.json work/resource-semantic-comparison.json strict | tee work/resource-semantic-comparison.log
+          # Diagnostic second view of Apktool's decode/encode transformation. Aapt2's
+          # resource-table check above remains the enforced semantic gate.
+          java -jar work/apktool.jar d -f -o work/decoded/compiled work/compiled/localized.apk
+          python repair/v13_compare_decoded_tree.py work/decoded/original work/decoded/compiled work/translation-audit.json work/decoded-tree-comparison.json report-only | tee work/decoded-tree-comparison.log
+          echo 'V13_RESOURCE_SEMANTICS=PASS'
+
+      - name: Package original payload plus exact V8 DEX and matching compiled resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python repair/v13_package.py work/original.apk work/v8.apk work/compiled/localized.apk work/unsigned.apk | tee work/package-verification.log
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          "$BT/zipalign" -f -P 4 -v 4 work/unsigned.apk work/aligned.apk >/dev/null
+          keytool -genkeypair -v \
+            -keystore work/v13-release.jks -storepass changeit -keypass changeit \
+            -alias v13release -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Mihealthreserch V13,O=Mihealthreserch,C=RU" >/dev/null 2>&1
+          "$BT/apksigner" sign \
+            --ks work/v13-release.jks --ks-pass pass:changeit --key-pass pass:changeit \
+            --ks-key-alias v13release --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out output/XiaomiHealthResearch_1.4.6_RU_V13.apk work/aligned.apk
+          test -s output/XiaomiHealthResearch_1.4.6_RU_V13.apk
+
+      - name: Independent V13 APK, DEX, manifest, resource-reference, and translation audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          APK=output/XiaomiHealthResearch_1.4.6_RU_V13.apk
+          "$BT/zipalign" -c -P 4 -v 4 "$APK"
+          "$BT/apksigner" verify --verbose --print-certs "$APK" > work/v13-signature-verification.txt
+          unzip -t "$APK" >/dev/null
+          "$BT/aapt2" dump resources "$APK" > work/v13-resources.dump
+          "$BT/aapt2" dump badging "$APK" > work/v13-badging.txt
+          python repair/v13_verify.py work/original.apk work/v8.apk "$APK" work/v13-resources.dump work/v13-badging.txt work/translation-audit.json repair/v13_translations.json | tee work/v13-verification.log
+          python repair/v13_compare_resource_tables.py work/original-resources.dump work/v13-resources.dump work/translation-audit.json work/v13-resource-semantic-comparison.json strict | tee work/v13-resource-semantic-comparison.log
+          sha256sum "$APK" | tee output/V13.sha256
+          cp work/translation-coverage.json output/V13_translation_coverage.json
+          echo 'V13_STATIC_RELEASE_GATE=PASS'
+
+      - name: Upload forensic and localization diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: XiaomiHealthResearch_V13_Diagnostics
+          if-no-files-found: warn
+          path: |
+            work/github_forensic_v10_7.json
+            work/forensic-crosscheck.json
+            work/github-forensic.log
+            work/forensic-crosscheck.log
+            work/dex-hardcoded-cjk-audit.json
+            work/dex-hardcoded-cjk-audit.log
+            work/translation-audit.json
+            work/translation-coverage.json
+            work/translation-coverage.log
+            work/localization.log
+            work/critical-source-shapes.json
+            work/attribute-format-repair.json
+            work/attribute-format-repair.log
+            work/original-resources.dump
+            work/v10.7-resources.dump
+            work/v10.7-translation-audit.json
+            work/v10.7-resource-semantic-comparison.json
+            work/v10.7-resource-semantic-comparison.log
+            work/compiled-resources.dump
+            work/resource-semantic-comparison.json
+            work/resource-semantic-comparison.log
+            work/decoded-tree-comparison.json
+            work/decoded-tree-comparison.log
+            work/package-verification.log
+            work/v13-resources.dump
+            work/v13-badging.txt
+            work/v13-signature-verification.txt
+            work/v13-verification.log
+            work/v13-resource-semantic-comparison.json
+            work/v13-resource-semantic-comparison.log
+            work/apktool-version.txt
+
+      - name: Upload statically verified candidate for emulator only
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: XiaomiHealthResearch_V13_Candidate
+          if-no-files-found: error
+          path: |
+            output/XiaomiHealthResearch_1.4.6_RU_V13.apk
+            output/V13.sha256
+            output/V13_translation_coverage.json
+
+  android-15-onboarding-smoke:
+    name: Android 15 x86_64 emulator — launch and Russian onboarding
+    needs: build-and-verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout V13 UI test helper
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download statically verified V13 candidate
+        uses: actions/download-artifact@v8
+        with:
+          name: XiaomiHealthResearch_V13_Candidate
+          path: artifact
+
+      - name: Fetch exact original and V10.7 comparison APKs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p comparison
+          git fetch --no-tags origin v10-build:refs/remotes/origin/v10-build
+          git show origin/v10-build:input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk > comparison/original.apk
+          echo '9e872f2d75e4ec1d509216d8caa998c2957d797c57b8ecc1ed8c92054f53c4bc  comparison/original.apk' | sha256sum -c -
+          mkdir -p comparison/v107
+          gh run download 37853886225 --repo "$GITHUB_REPOSITORY" --name XiaomiHealthResearch_V10.7 --dir comparison/v107
+          V107="$(find comparison/v107 -type f -name 'XiaomiHealthResearch_1.4.6_RU_V10.7.apk' -print -quit)"
+          test -n "$V107" && test -s "$V107"
+          echo '5f3c9ea4eec8a7260324669fe8fe789f1f789c5de0ffb3fc34257407df00a92e  '"$V107" | sha256sum -c -
+          cp "$V107" comparison/v10.7.apk
+
+      - name: Install, launch, compare all three onboarding paths, and exercise V13 basic mode
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -camera-back none
+          script: |
+            set -euo pipefail
+            APK="$(find "$GITHUB_WORKSPACE/artifact" -type f -name 'XiaomiHealthResearch_1.4.6_RU_V13.apk' -print -quit)"
+            ORIGINAL="$GITHUB_WORKSPACE/comparison/original.apk"
+            V107="$GITHUB_WORKSPACE/comparison/v10.7.apk"
+            test -n "$APK" && test -s "$APK"
+            mkdir -p "$GITHUB_WORKSPACE/runtime-report"
+            adb wait-for-device
+            adb shell cmd locale set ru-RU || true
+            adb shell settings put system system_locales ru-RU || true
+            adb shell am broadcast -a android.intent.action.LOCALE_CHANGED >/dev/null || true
+
+            # Baseline 1: untouched Xiaomi original. Collect startup evidence, then
+            # uninstall it before the differently signed repacked variants.
+            adb install -r "$ORIGINAL"
+            adb logcat -c
+            adb shell monkey -p com.mi.healthresearch 1
+            sleep 12
+            adb shell uiautomator dump /sdcard/v13-original.xml >/dev/null
+            adb pull /sdcard/v13-original.xml "$GITHUB_WORKSPACE/runtime-report/original.xml" >/dev/null
+            ORIGINAL_PID="$(adb shell pidof com.mi.healthresearch | tr -d '\r' || true)"
+            test -n "$ORIGINAL_PID"
+            adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-original.txt"
+            adb shell am force-stop com.mi.healthresearch || true
+            adb uninstall com.mi.healthresearch
+
+            # Baseline 2: V10.7 as installed by the user. Do not accept consent;
+            # only check that onboarding starts and the former provider exception
+            # is not thrown during startup.
+            adb install -r "$V107"
+            adb logcat -c
+            adb shell monkey -p com.mi.healthresearch 1
+            sleep 12
+            adb shell uiautomator dump /sdcard/v13-v107.xml >/dev/null
+            adb pull /sdcard/v13-v107.xml "$GITHUB_WORKSPACE/runtime-report/v10.7.xml" >/dev/null
+            V107_PID="$(adb shell pidof com.mi.healthresearch | tr -d '\r' || true)"
+            test -n "$V107_PID"
+            adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-v10.7.txt"
+            if grep -E 'Missing android.support.FILE_PROVIDER_PATHS meta-data|Unable to get provider com\.mi\.research\.upgrade\.download\.AppUpgradeProvider|FATAL EXCEPTION' "$GITHUB_WORKSPACE/runtime-report/logcat-v10.7.txt" | grep -E 'com\.mi\.healthresearch|main|AppUpgradeProvider|FILE_PROVIDER_PATHS'; then
+              echo 'V10.7_STARTUP_REGRESSION_FOUND=YES'
+            fi
+            adb shell am force-stop com.mi.healthresearch || true
+            adb uninstall com.mi.healthresearch
+
+            # Candidate V13: require the reviewed Russian screen, decline the
+            # optional consent and continue in basic mode to exercise a UI action.
+            adb install -r "$APK"
+            adb logcat -c
+            adb shell monkey -p com.mi.healthresearch 1
+            sleep 15
+            adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-first-screen.txt"
+            adb shell uiautomator dump /sdcard/v13-onboarding.xml >/dev/null
+            adb pull /sdcard/v13-onboarding.xml "$GITHUB_WORKSPACE/runtime-report/onboarding.xml" >/dev/null
+            python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/onboarding.xml" check
+            read -r X Y < <(python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/onboarding.xml" tap)
+            adb shell input tap "$X" "$Y"
+            sleep 8
+            adb shell uiautomator dump /sdcard/v13-basic-mode.xml >/dev/null
+            adb pull /sdcard/v13-basic-mode.xml "$GITHUB_WORKSPACE/runtime-report/basic-mode.xml" >/dev/null
+            python "$GITHUB_WORKSPACE/repair/v13_ui_probe.py" "$GITHUB_WORKSPACE/runtime-report/basic-mode.xml" check-basic
+            PID="$(adb shell pidof com.mi.healthresearch | tr -d '\r' || true)"
+            test -n "$PID"
+            adb logcat -d -v threadtime > "$GITHUB_WORKSPACE/runtime-report/logcat-after-basic-mode.txt"
+            if grep -E 'Missing android.support.FILE_PROVIDER_PATHS meta-data|Unable to get provider com\.mi\.research\.upgrade\.download\.AppUpgradeProvider' "$GITHUB_WORKSPACE/runtime-report/logcat-after-basic-mode.txt"; then
+              echo 'V13_FILEPROVIDER_REGRESSION=FAIL'
+              exit 1
+            fi
+            if grep -E 'FATAL EXCEPTION' "$GITHUB_WORKSPACE/runtime-report/logcat-after-basic-mode.txt" | grep -E 'com\.mi\.healthresearch|main'; then
+              echo 'V13_APP_CRASH=FAIL'
+              exit 1
+            fi
+            echo "V13_EMULATOR_PID=$PID"
+            echo 'V13_ANDROID15_RU_ONBOARDING_AND_BASIC_MODE=PASS'
+
+      - name: Upload Android runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: XiaomiHealthResearch_V13_Android15_Runtime_Report
+          if-no-files-found: warn
+          path: runtime-report/
+
+      - name: Publish V13 APK only after Android runtime checks pass
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: XiaomiHealthResearch_V13
+          if-no-files-found: error
+          path: |
+            artifact/XiaomiHealthResearch_1.4.6_RU_V13.apk
+            artifact/V13.sha256
+            artifact/V13_translation_coverage.json
+            runtime-report/
