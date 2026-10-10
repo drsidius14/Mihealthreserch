@@ -47,6 +47,27 @@ jobs:
           python3 patchlab/tools/extract_context.py patchlab/work/mi_fitness patchlab/report
           cp patchlab/work/mi_fitness/AndroidManifest.xml patchlab/report/AndroidManifest-decoded.xml
           printf '%s\n' 'STATUS=INSPECTION_ONLY' 'No APK patch was applied.' 'Review validator-context.txt before preparing an exact DEX modification.' > patchlab/report/STATUS.txt
+      - name: Decode Research APK and expand Validator evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p patchlab/work/research patchlab/report/research
+          research="patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk"
+          if [[ -f "$research" ]]; then
+            apksigner verify --print-certs "$research" > patchlab/report/research/certificate.txt 2>&1 || true
+            apktool d -f "$research" -o patchlab/work/research/decoded >/dev/null
+            cp patchlab/work/research/decoded/AndroidManifest.xml patchlab/report/research/AndroidManifest-decoded.xml
+          else
+            echo "Research APK missing from patchlab/input" > patchlab/report/research/NOT_PRESENT.txt
+          fi
+          while IFS= read -r -d '' f; do
+            if grep -q -E 'isPrivilegedPackage|mGrantedApps|sInternalSignatures|class Validator' "$f"; then
+              rel="${f#patchlab/work/mi_fitness/}"
+              mkdir -p "patchlab/report/validator-full/$(dirname "$rel")"
+              cp "$f" "patchlab/report/validator-full/$rel"
+            fi
+          done < <(find patchlab/work/mi_fitness -type f -name '*.smali' -print0)
+          grep -R -n -E 'mGrantedApps|sInternalSignatures|isPrivilegedPackage|6284E60CF9322E5D356D715520C294A2B94E0174|7B6DC7079C34739CE81159719FB5EB61D2A03225' patchlab/work/mi_fitness --include='*.smali' > patchlab/report/validator-trust-index.txt || true
       - name: Upload forensic report
         if: always()
         uses: actions/upload-artifact@v4
