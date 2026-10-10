@@ -20,7 +20,7 @@ jobs:
           mkdir -p patchlab/input patchlab/work patchlab/report
           shopt -s nullglob
           parts=(patchlab/input-parts/mi_fitness_3.59.1.part-*)
-          ((${#parts[@]} == 3))
+          ((${#parts[@]} == 10))
           cat "${parts[@]}" > patchlab/input/com.mi.health_3.59.1.apk
           echo '46100649d47000e8886d94cfbb34c18706e492a5d3aaa7f34cd4785841ffc254  patchlab/input/com.mi.health_3.59.1.apk' | sha256sum -c -
           echo '121bc0022bcd5959e9b57f52a8ed35ac87af453b5dff2a095a331d5cef5f133e  patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk' | sha256sum -c -
