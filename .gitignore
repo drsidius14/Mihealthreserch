@@ -1,0 +1,5 @@
+
+patchlab/input/*.apk
+patchlab/work/
+patchlab/output/
+patchlab/report/

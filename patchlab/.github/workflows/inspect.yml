@@ -1,0 +1,56 @@
+name: PatchLab: inspect Mi Fitness integration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s patchlab/input/com.mi.health_3.59.1.apk || { echo 'Missing patchlab/input/com.mi.health_3.59.1.apk'; exit 2; }
+          test -s patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk || { echo 'Missing patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk'; exit 2; }
+      - name: Install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y apktool apksigner unzip python3
+          mkdir -p patchlab/work patchlab/report
+      - name: Record input hashes and certificates
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum patchlab/input/*.apk | tee patchlab/report/input-sha256.txt
+          for f in patchlab/input/*.apk; do
+            echo "=== $f ===" >> patchlab/report/certificates.txt
+            apksigner verify --print-certs "$f" >> patchlab/report/certificates.txt 2>&1 || true
+          done
+      - name: Decode Mi Fitness and extract target methods
+        shell: bash
+        run: |
+          set -euo pipefail
+          apktool d -f patchlab/input/com.mi.health_3.59.1.apk -o patchlab/work/mi_fitness >/dev/null
+          find patchlab/work/mi_fitness -type f -name '*.smali' -print0 | xargs -0 grep -n -E 'isPrivilegedPackage|DefaultBinderPoolWrapper|queryBinder|Validator' > patchlab/report/method-index.txt || true
+          python3 patchlab/tools/extract_context.py patchlab/work/mi_fitness patchlab/report
+          cp patchlab/work/mi_fitness/AndroidManifest.xml patchlab/report/AndroidManifest-decoded.xml
+          cat > patchlab/report/STATUS.txt <<'TXT'
+STATUS=INSPECTION_ONLY
+A patch has NOT been applied. Review validator-context.txt and method-index.txt before authoring an exact DEX change. This workflow intentionally fails closed rather than modifying a guessed instruction sequence.
+TXT
+      - name: Upload forensic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiFitness-PatchLab-Forensic-Report
+          path: patchlab/report/
+          if-no-files-found: warn

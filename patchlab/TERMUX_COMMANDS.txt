@@ -1,0 +1,57 @@
+# MiFitness PatchLab — один запуск в Termux
+# Скачай MiFitness-PatchLab.zip в Download/Downloads и вставь весь этот блок.
+# ZIP автоматически найдётся и распакуется; вручную ничего делать не нужно.
+
+set -Eeuo pipefail
+trap 'rc=$?; echo; echo "ОШИБКА: код $rc. Папка: $PWD. Терминал оставлен открытым."; false' ERR
+pkg install -y git unzip findutils
+termux-setup-storage >/dev/null 2>&1 || true
+ZIP=""
+for d in "$HOME/storage/downloads" "$HOME/Downloads" "$HOME/Download"; do
+  if [ -d "$d" ]; then ZIP="$(find "$d" -maxdepth 3 -type f -name 'MiFitness-PatchLab*.zip' -print -quit 2>/dev/null || true)"; [ -n "$ZIP" ] && break; fi
+done
+if [ -z "$ZIP" ]; then echo "Не найден ZIP. Скачай его в Download и повтори блок."; false; fi
+BASE="$HOME/MiFitness-PatchLab-deploy"
+rm -rf "$BASE"; mkdir -p "$BASE/package"
+unzip -q "$ZIP" -d "$BASE/package"
+SRC="$BASE/package/MiFitness-PatchLab"
+[ -f "$SRC/README_RU.md" ] || { echo "Неверная структура ZIP"; false; }
+# Используем существующую авторизацию Git; токены не запрашиваем и не меняем.
+git ls-remote https://github.com/drsidius14/Mihealthreserch.git HEAD >/dev/null
+REPO="$BASE/repo"; rm -rf "$REPO"
+git clone --branch v17.03-build --single-branch https://github.com/drsidius14/Mihealthreserch.git "$REPO"
+cd "$REPO"
+BRANCH=mifitness-patchlab
+if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then git fetch origin "$BRANCH"; git switch -c "$BRANCH" "origin/$BRANCH"; else git switch -c "$BRANCH"; fi
+mkdir -p patchlab .github/workflows
+cp -R "$SRC"/. patchlab/
+cp "$SRC/.github/workflows/inspect.yml" .github/workflows/mifitness_patchlab_inspect.yml
+# В workflow используются пути patchlab/ внутри основного репозитория.
+python3 - <<'PY2'
+p='.github/workflows/mifitness_patchlab_inspect.yml'
+s=open(p).read()
+s=s.replace('input/com.mi.health_3.59.1.apk','patchlab/input/com.mi.health_3.59.1.apk')
+s=s.replace('input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk','patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk')
+s=s.replace('sha256sum input/*.apk','sha256sum patchlab/input/*.apk').replace('for f in input/*.apk','for f in patchlab/input/*.apk')
+s=s.replace('mkdir -p work report','mkdir -p patchlab/work patchlab/report')
+s=s.replace('>> report/certificates.txt','>> patchlab/report/certificates.txt').replace('tee report/input-sha256.txt','tee patchlab/report/input-sha256.txt')
+s=s.replace(' -o work/mi_fitness',' -o patchlab/work/mi_fitness').replace('find work/mi_fitness','find patchlab/work/mi_fitness')
+s=s.replace('> report/method-index.txt','> patchlab/report/method-index.txt')
+s=s.replace('python3 tools/extract_context.py work/mi_fitness report','python3 patchlab/tools/extract_context.py patchlab/work/mi_fitness patchlab/report')
+s=s.replace('cp work/mi_fitness/AndroidManifest.xml report/AndroidManifest-decoded.xml','cp patchlab/work/mi_fitness/AndroidManifest.xml patchlab/report/AndroidManifest-decoded.xml')
+s=s.replace('> report/STATUS.txt','> patchlab/report/STATUS.txt').replace('path: report/','path: patchlab/report/')
+open(p,'w').write(s)
+PY2
+cat >> .gitignore <<'EOF2'
+
+# MiFitness PatchLab inputs and generated analysis
+patchlab/input/*.apk
+patchlab/work/
+patchlab/output/
+patchlab/report/
+EOF2
+git add patchlab .github/workflows/mifitness_patchlab_inspect.yml .gitignore
+if ! git diff --cached --quiet; then git -c user.name='PatchLab Automation' -c user.email='patchlab@users.noreply.github.com' commit -m 'Add isolated Mi Fitness PatchLab workflow'; fi
+git push -u origin "$BRANCH"
+echo "ГОТОВО: https://github.com/drsidius14/Mihealthreserch/tree/$BRANCH"
+echo "Основная ветка не изменена. Это этап диагностики, не готовый патч APK. Терминал оставлен открытым."
