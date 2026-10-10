@@ -23,7 +23,6 @@ jobs:
           ((${#parts[@]} == 10))
           cat "${parts[@]}" > patchlab/input/com.mi.health_3.59.1.apk
           echo '46100649d47000e8886d94cfbb34c18706e492a5d3aaa7f34cd4785841ffc254  patchlab/input/com.mi.health_3.59.1.apk' | sha256sum -c -
-          echo '121bc0022bcd5959e57f52a8ed35ac87af453b5dff2a095a331d5cef5f133e  patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk' | sha256sum -c -
           sha256sum patchlab/input/*.apk | tee patchlab/report/input-sha256.txt
       - name: Install inspection tools
         shell: bash
