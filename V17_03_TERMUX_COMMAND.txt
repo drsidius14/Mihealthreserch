@@ -1,0 +1,35 @@
+ПАКЕТ V17.03 — КОМАНДЫ TERMUX
+================================
+
+Перед запуском:
+1. Скачай XiaomiHealthResearch_V17_03_SOURCE.zip в папку Download телефона.
+2. Убедись, что репозиторий уже клонирован в ~/Mihealthreserch.
+3. Выполни весь блок целиком в Termux.
+
+cd ~/Mihealthreserch &&
+test -d .git &&
+test -f .github/workflows/v17.yml &&
+test -f repair/v13_dex_translations.json &&
+test -z "$(git status --porcelain)" || { echo "ОШИБКА: репозиторий отсутствует или рабочее дерево не чистое. Ничего не меняла; сохрани изменения и повтори."; exit 1; } &&
+git fetch --no-tags origin v17.01-build &&
+git checkout -B v17.03-build origin/v17.01-build &&
+
+mkdir -p "$HOME/storage/downloads" &&
+test -s "$HOME/storage/downloads/XiaomiHealthResearch_V17_03_SOURCE.zip" || { echo "Не найден файл $HOME/storage/downloads/XiaomiHealthResearch_V17_03_SOURCE.zip. Скачай ZIP в Download."; exit 1; }
+
+unzip -o "$HOME/storage/downloads/XiaomiHealthResearch_V17_03_SOURCE.zip" -d . &&
+python repair/v17_03_prepare.py &&
+python -m py_compile repair/v17_03_prepare.py repair/v13_ui_probe.py &&
+python -m json.tool repair/v13_dex_translations.json >/dev/null &&
+git diff --check &&
+git status --short &&
+git diff --stat &&
+git add .github/workflows/v17_03.yml repair/v17_03_prepare.py repair/v13_ui_probe.py repair/v13_dex_translations.json V17_03_README_RU.md V17_03_TERMUX_COMMAND.txt &&
+git commit -m "Prepare V17.03 localization and Android runtime smoke fixes" &&
+git push -u origin v17.03-build
+
+После push:
+- Открой https://github.com/drsidius14/Mihealthreserch/actions
+- Выбери Xiaomi Health Research V17.03.
+- Дождись завершения build-and-verify и android-15-onboarding-smoke.
+- Если workflow завершится ошибкой, скачай runtime diagnostics / diagnostics artifacts и пришли отчёт. Не устанавливай APK из diagnostic artifact как подтверждённо рабочий.

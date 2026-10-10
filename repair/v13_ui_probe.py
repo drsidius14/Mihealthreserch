@@ -62,6 +62,7 @@ def main(path, mode='check', needle='Не соглашаться и перейт
             print('V16_TAB_NOT_VISIBLY_EMPTY=YES')
         else:
             print('V16_TAB_BLANK_SCREEN_SUSPECTED=YES')
+            raise SystemExit('V17_03_TAB_EMPTY:' + needle)
         return
     for n,t in zip(nodes,texts):
         if needle in t:
