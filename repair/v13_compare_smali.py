@@ -7,6 +7,46 @@ from pathlib import Path
 
 from v17_01_smali_strings import decode_smali_literal
 
+FIELD_RE = re.compile(
+    r'^(?P<prefix>\s*\.field\s+.*?:)(?P<type>\[*[ZBSCIJFD]|\[*L[^;]+;)'
+    r'(?P<init>\s*=\s*(?P<value>[^ \t#]+))?(?P<tail>\s*(?:#.*)?)$'
+)
+
+
+def normalize_default_field(line: str) -> str:
+    """Normalize only explicit JVM-default initializers on Smali field declarations.
+
+    Apktool may omit a field initializer when it equals the JVM's implicit default.
+    No non-default value, instruction, field descriptor, modifier, or comment is
+    relaxed by this comparison.
+    """
+    match = FIELD_RE.match(line)
+    if not match:
+        return line
+    initializer = match.group('init')
+    if not initializer:
+        return line
+    value = match.group('value')
+    field_type = match.group('type')
+    if field_type.startswith('[') or field_type.startswith('L'):
+        is_default = value == 'null'
+    elif field_type == 'Z':
+        is_default = value == 'false'
+    elif field_type in {'B', 'S', 'I', 'C'}:
+        is_default = value.lower() in {'0', '0x0', '0x0000', '0x00000000'}
+    elif field_type == 'J':
+        is_default = value.lower() in {'0', '0l', '0x0', '0x0l', '0x0000000000000000'}
+    elif field_type == 'F':
+        is_default = value.lower() in {'0.0', '0.0f', '0x0.0p0'}
+    elif field_type == 'D':
+        is_default = value.lower() in {'0.0', '0.0d', '0x0.0p0'}
+    else:
+        is_default = False
+    if not is_default:
+        return line
+    return match.group('prefix') + field_type + match.group('tail')
+
+
 CONST_RE = re.compile(r'^(?P<prefix>\s*const-string(?:/jumbo)?\s+[^,]+,\s*)(?P<literal>"(?:\\.|[^"\\])*")(?P<tail>\s*(?:#.*)?)$')
 
 
@@ -50,7 +90,7 @@ def normalize_pair(a: str, b: str, source_to_target: dict[str, str], scopes: dic
     if len(aa) != len(bb):
         return False, f'{label}:line-count {len(aa)} != {len(bb)}'
     for i, (la, lb) in enumerate(zip(aa, bb), 1):
-        if la == lb:
+        if la == lb or normalize_default_field(la) == normalize_default_field(lb):
             continue
         ma, mb = CONST_RE.match(la), CONST_RE.match(lb)
         if ma and mb and ma.group('tail') == mb.group('tail'):
@@ -156,6 +196,29 @@ def self_test():
         try: compare(a,b,mp,root/'report3.json')
         except SystemExit: pass
         else: raise AssertionError('unexpected instruction change was not rejected')
+    # Apktool may omit explicit initializers that equal JVM defaults. Permit only
+    # those semantics-preserving field changes; keep non-default values strict.
+    default_field_pairs = [
+        ('.field public static ready:Z = false', '.field public static ready:Z'),
+        ('.field public static count:I = 0x0', '.field public static count:I'),
+        ('.field public static total:J = 0x0L', '.field public static total:J'),
+        ('.field public static ratio:F = 0.0f', '.field public static ratio:F'),
+        ('.field public static title:Ljava/lang/String; = null', '.field public static title:Ljava/lang/String;'),
+        ('.field public static values:[I = null', '.field public static values:[I'),
+    ]
+    for explicit, implicit in default_field_pairs:
+        ok, msg = normalize_pair(explicit, implicit, {}, {}, 'default-field-selftest')
+        assert ok, f'explicit JVM default should match omitted initializer: {msg}'
+        ok, msg = normalize_pair(implicit, explicit, {}, {}, 'default-field-selftest')
+        assert ok, f'comparison must work in both directions: {msg}'
+    for explicit, implicit in [
+        ('.field public static ready:Z = true', '.field public static ready:Z'),
+        ('.field public static count:I = 1', '.field public static count:I'),
+        ('.field public static title:Ljava/lang/String; = "not null"', '.field public static title:Ljava/lang/String;'),
+    ]:
+        ok, _ = normalize_pair(explicit, implicit, {}, {}, 'nondefault-field-selftest')
+        assert not ok, 'non-default initializer must not be normalized away'
+
     print('V16_SMALI_ROUNDTRIP_COMPARE_SELFTEST=PASS')
 
 if __name__=='__main__':
