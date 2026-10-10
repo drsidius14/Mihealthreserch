@@ -1,0 +1,57 @@
+name: PatchLab - inspect Mi Fitness integration
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Reassemble and verify original APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p patchlab/input patchlab/work patchlab/report
+          shopt -s nullglob
+          parts=(patchlab/input-parts/mi_fitness_3.59.1.part-*)
+          ((${#parts[@]} == 3))
+          cat "${parts[@]}" > patchlab/input/com.mi.health_3.59.1.apk
+          echo '46100649d47000e8886d94cfbb34c18706e492a5d3aaa7f34cd4785841ffc254  patchlab/input/com.mi.health_3.59.1.apk' | sha256sum -c -
+          echo '121bc0022bcd5959e9b57f52a8ed35ac87af453b5dff2a095a331d5cef5f133e  patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk' | sha256sum -c -
+          sha256sum patchlab/input/*.apk | tee patchlab/report/input-sha256.txt
+      - name: Install inspection tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y apktool apksigner unzip python3
+      - name: Record certificates
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in patchlab/input/*.apk; do
+            echo "=== $f ===" >> patchlab/report/certificates.txt
+            apksigner verify --print-certs "$f" >> patchlab/report/certificates.txt 2>&1 || true
+          done
+      - name: Decode and inspect Mi Fitness
+        shell: bash
+        run: |
+          set -euo pipefail
+          apktool d -f patchlab/input/com.mi.health_3.59.1.apk -o patchlab/work/mi_fitness >/dev/null
+          find patchlab/work/mi_fitness -type f -name '*.smali' -print0 | xargs -0 grep -n -E 'isPrivilegedPackage|DefaultBinderPoolWrapper|queryBinder|Validator' > patchlab/report/method-index.txt || true
+          python3 patchlab/tools/extract_context.py patchlab/work/mi_fitness patchlab/report
+          cp patchlab/work/mi_fitness/AndroidManifest.xml patchlab/report/AndroidManifest-decoded.xml
+          printf '%s\n' 'STATUS=INSPECTION_ONLY' 'No APK patch was applied.' 'Review validator-context.txt before preparing an exact DEX modification.' > patchlab/report/STATUS.txt
+      - name: Upload forensic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiFitness-PatchLab-Forensic-Report
+          path: patchlab/report/
+          if-no-files-found: warn

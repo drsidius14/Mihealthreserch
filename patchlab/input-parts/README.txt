@@ -1,0 +1,1 @@
+Mi Fitness 3.59.1 source APK is stored in three numbered parts, each below GitHub's 100 MB per-file limit. The workflow concatenates them in lexical order and verifies the reconstructed APK SHA-256 before analysis. This branch is inspection-only.
