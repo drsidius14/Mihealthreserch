@@ -18,7 +18,10 @@ def signature_entry(name):
 
 def resource_id_map(dump_path):
     text = Path(dump_path).read_text(encoding="utf-8", errors="replace")
-    pairs = set(RESOURCE_ID.findall(text))
+    pairs = {
+        (resource_id.lower(), re.sub(r"\s+PUBLIC$", "", name.strip()))
+        for resource_id, name in RESOURCE_ID.findall(text)
+    }
     if not pairs:
         raise SystemExit("RESOURCE_TABLE_ID_MAP_PARSE_EMPTY:" + str(dump_path))
     return pairs
