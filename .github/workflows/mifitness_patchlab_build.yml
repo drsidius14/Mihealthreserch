@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - name: Checkout only the clean PatchLab branch
+      - name: Checkout clean Mi Fitness PatchLab branch
         uses: actions/checkout@v4
         with:
           ref: mifitness-patchlab-clean
@@ -39,14 +39,14 @@ jobs:
           cat "${parts[@]}" > patchlab/input/com.mi.health_3.59.1.apk
           echo '46100649d47000e8886d94cfbb34c18706e492a5d3aaa7f34cd4785841ffc254  patchlab/input/com.mi.health_3.59.1.apk' | sha256sum -c -
           sha256sum patchlab/input/com.mi.health_3.59.1.apk | tee patchlab/report/input-sha256.txt
-          test -f patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk
+          test -s patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk
 
-      - name: Install APK tools
+      - name: Install existing APK tools
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y apktool
+          sudo apt-get install -y apktool unzip
 
       - name: Install Android SDK tools
         uses: android-actions/setup-android@v4
@@ -58,32 +58,43 @@ jobs:
           sdkmanager --install "build-tools;35.0.0"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
 
-      - name: Verify Research APK signer
+      - name: Verify separate Mi Health reference APK signer
         shell: bash
         run: |
           set -euo pipefail
           apksigner verify --print-certs patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk | tee patchlab/report/research-certificate.txt
           tr -d ':' < patchlab/report/research-certificate.txt | tr '[:upper:]' '[:lower:]' | grep -q '86666fd4c4ef99a2edba2a50595dc223d0f42b11'
 
-      - name: Decode Mi Fitness and apply exact allowlist patch
+      - name: Decode Mi Fitness without decoding resources and apply Binder patch
         shell: bash
         run: |
           set -euo pipefail
-          apktool d -f patchlab/input/com.mi.health_3.59.1.apk -o patchlab/work/mi_fitness
+          # Patch changes only smali allowlists; resource decoding caused the observed failure.
+          apktool d -f -r patchlab/input/com.mi.health_3.59.1.apk -o patchlab/work/mi_fitness
           python3 patchlab/tools/apply_binder_allowlist_patch.py \
             --decoded-root patchlab/work/mi_fitness \
             --report patchlab/report/PATCH-REPORT.txt
+          test -s patchlab/report/PATCH-REPORT.txt
 
-      - name: Rebuild and validate patched APK contents
+      - name: Rebuild and verify patched Mi Fitness
         shell: bash
         run: |
           set -euo pipefail
           apktool b patchlab/work/mi_fitness -o patchlab/work/mi_fitness-unsigned.apk
+          test -s patchlab/work/mi_fitness-unsigned.apk
           zipalign -p -f 4 patchlab/work/mi_fitness-unsigned.apk patchlab/work/mi_fitness-aligned.apk
-          apktool d -f patchlab/work/mi_fitness-aligned.apk -o patchlab/work/verify-decoded
+          test -s patchlab/work/mi_fitness-aligned.apk
+
+          # Resource table must remain byte-for-byte unchanged.
+          unzip -p patchlab/input/com.mi.health_3.59.1.apk resources.arsc | sha256sum | awk '{print $1}' > patchlab/report/source-resources-arsc.sha256
+          unzip -p patchlab/work/mi_fitness-aligned.apk resources.arsc | sha256sum | awk '{print $1}' > patchlab/report/output-resources-arsc.sha256
+          diff -u patchlab/report/source-resources-arsc.sha256 patchlab/report/output-resources-arsc.sha256
+
+          apktool d -f -r patchlab/work/mi_fitness-aligned.apk -o patchlab/work/verify-decoded
           python3 patchlab/tools/verify_binder_allowlist_patch.py \
             --decoded-root patchlab/work/verify-decoded \
             --report patchlab/report/DEX-VALIDATION.txt
+          test -s patchlab/report/DEX-VALIDATION.txt
 
       - name: Sign test APK and verify signature
         shell: bash
@@ -92,26 +103,30 @@ jobs:
           keytool -genkeypair -noprompt -keystore patchlab/work/patchlab-test.jks \
             -storepass patchlab-temp-pass -keypass patchlab-temp-pass -alias patchlab-test \
             -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=MiFitness PatchLab Test,O=Mihealthreserch,C=RU"
+            -dname "CN=Mi Fitness Binder Patch Test,O=PatchLab,C=RU"
           apksigner sign --ks patchlab/work/patchlab-test.jks --ks-key-alias patchlab-test \
             --ks-pass pass:patchlab-temp-pass --key-pass pass:patchlab-temp-pass \
-            --out patchlab/output/MiFitness_3.59.1_V17.03_BinderPatch_TESTSIGNED.apk \
+            --out patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk \
             patchlab/work/mi_fitness-aligned.apk
-          apksigner verify --verbose --print-certs patchlab/output/MiFitness_3.59.1_V17.03_BinderPatch_TESTSIGNED.apk \
+          apksigner verify --verbose --print-certs patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk \
             | tee patchlab/report/output-signature-verification.txt
-          sha256sum patchlab/output/MiFitness_3.59.1_V17.03_BinderPatch_TESTSIGNED.apk \
+          sha256sum patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk \
             | tee patchlab/report/output-sha256.txt
           printf '%s\n' \
             'STATUS=BUILD_AND_DEX_CHECKS_PASSED' \
+            'TARGET=Mi Fitness 3.59.1' \
+            'PATCH=Binder signature allowlists only' \
+            'RESOURCE_TABLE=resources.arsc SHA-256 checked against original' \
             'SIGNING=temporary test key; not the original Xiaomi signer' \
             'INSTALL_NOTE=will not update an official-signed Mi Fitness install in place' \
             > patchlab/report/STATUS.txt
+          test -s patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk
 
       - name: Upload patched APK and validation report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: MiFitness-3.59.1-V17.03-BinderPatch
+          name: MiFitness-3.59.1-BinderPatch
           path: |
             patchlab/output/*
             patchlab/report/*
