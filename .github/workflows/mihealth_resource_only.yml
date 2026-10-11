@@ -1,0 +1,182 @@
+name: Mi Health — resource-only Russian test build
+
+on:
+  push:
+    branches: ["mihealth-resource-only"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: mihealth-resource-only-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout isolated patch workflow
+        uses: actions/checkout@v4
+
+      - name: Checkout only the approved translation map and original APK input
+        uses: actions/checkout@v4
+        with:
+          ref: v17.03-build
+          path: approved-source
+          sparse-checkout: |
+            repair/v13_translations.json
+            input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk
+          sparse-checkout-cone-mode: false
+
+      - name: Validate approved inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C approved-source hash-object repair/v13_translations.json)" = "0fa39dece84b296fe8fb54f837873a821e607b99"
+          echo "9e872f2d75e4ec1d509216d8caa998c2957d797c57b8ecc1ed8c92054f53c4bc  approved-source/input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk" | sha256sum -c -
+          python -m json.tool approved-source/repair/v13_translations.json >/dev/null
+          echo "APPROVED_TRANSLATION_MAP=PINNED_AND_VALID"
+          echo "ORIGINAL_APK=SHA256_VERIFIED"
+
+      - name: Set up Python and Java
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Run localizer self-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile patch/*.py
+          python patch/selftest_resource_only.py
+          python patch/selftest_package_resource_only.py
+
+      - name: Install pinned Apktool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work output
+          curl --location --fail --silent --show-error --retry 4 --retry-all-errors \
+            --connect-timeout 20 --max-time 240 \
+            -o work/apktool.jar \
+            https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+          echo "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423  work/apktool.jar" | sha256sum -c -
+          java -jar work/apktool.jar --version | tee work/apktool-version.txt
+          grep -q '3.0.3' work/apktool-version.txt
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          SDKMANAGER="$(find "$SDK/cmdline-tools" -type f -name sdkmanager -print 2>/dev/null | sort -V | tail -n 1)"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_BUILD_TOOLS=$SDK/build-tools/35.0.0" >> "$GITHUB_ENV"
+
+      - name: Decode original APK and create Russian overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          cp approved-source/input/XiaomiHealthResearch_1.4.6_CN_CONTROL.apk work/original.apk
+          cp approved-source/repair/v13_translations.json work/translations.json
+          java -jar work/apktool.jar d -f -o work/decoded work/original.apk
+          python patch/localize_resources.py work/decoded work/translations.json work/translation-audit.json | tee work/localization.log
+          test -s work/decoded/res/values-ru/strings.xml
+          echo "RESOURCE_OVERLAY_CREATED=PASS"
+
+      - name: Compile resource table and preserve original APK payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_BUILD_TOOLS"
+          java -jar work/apktool.jar b -f work/decoded -o work/apktool-rebuilt.apk
+          test -s work/apktool-rebuilt.apk
+          unzip -t work/apktool-rebuilt.apk >/dev/null
+          "$BT/aapt2" dump resources work/original.apk > work/original-resources.dump
+          "$BT/aapt2" dump resources work/apktool-rebuilt.apk > work/rebuilt-resources.dump
+          "$BT/aapt2" dump badging work/original.apk > work/original-badging.txt
+          "$BT/aapt2" dump badging work/apktool-rebuilt.apk > work/rebuilt-badging.txt
+          python patch/package_resource_only.py work/original.apk work/apktool-rebuilt.apk work/original-resources.dump work/rebuilt-resources.dump work/unsigned.apk | tee work/package-audit.log
+          "$BT/zipalign" -f -P 16 -v 4 work/unsigned.apk work/aligned.apk >/dev/null
+          keytool -genkeypair -v \
+            -keystore work/test-key.jks -storepass changeit -keypass changeit \
+            -alias mihealthtest -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=MiHealth Resource-Only Test,O=Mihealthreserch,C=RU" >/dev/null 2>&1
+          "$BT/apksigner" sign \
+            --ks work/test-key.jks --ks-pass pass:changeit --key-pass pass:changeit \
+            --ks-key-alias mihealthtest --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out output/MiHealth_RU_RESOURCE_ONLY_TEST.apk work/aligned.apk
+          "$BT/apksigner" verify --verbose --print-certs output/MiHealth_RU_RESOURCE_ONLY_TEST.apk | tee work/signature.txt
+          "$BT/aapt2" dump badging output/MiHealth_RU_RESOURCE_ONLY_TEST.apk > work/candidate-badging.txt
+          grep -F "package: name='com.mi.healthresearch'" work/candidate-badging.txt
+          unzip -t output/MiHealth_RU_RESOURCE_ONLY_TEST.apk >/dev/null
+          python patch/verify_resource_only.py work/original.apk output/MiHealth_RU_RESOURCE_ONLY_TEST.apk work/translation-audit.json work/translations.json | tee work/preservation-audit.log
+          sha256sum output/MiHealth_RU_RESOURCE_ONLY_TEST.apk | tee output/SHA256SUMS.txt
+          cp work/translation-audit.json output/translation-audit.json
+          cp work/preservation-audit.log output/preservation-audit.log
+          cp work/signature.txt output/signature.txt
+          {
+            echo "## Mi Health resource-only test build"
+            echo "- Resource map: 1,137 reviewed entries; pinned Git blob verified."
+            echo "- `AndroidManifest.xml`: byte-identical to original."
+            echo "- All `classes*.dex`: byte-identical to original."
+            echo "- All `res/*` file payloads: byte-identical to original."
+            echo "- Only changed non-signature ZIP payload: `resources.arsc`."
+            echo "- Test signing key: new key; official Mi Fitness trust-key compatibility is **not proven**."
+            echo "- Candidate is test-only and cannot update the official signature in place."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test APK and audit
+        if: always() && hashFiles('output/MiHealth_RU_RESOURCE_ONLY_TEST.apk') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiHealth_RU_RESOURCE_ONLY_TEST
+          if-no-files-found: error
+          path: |
+            output/MiHealth_RU_RESOURCE_ONLY_TEST.apk
+            output/SHA256SUMS.txt
+            output/translation-audit.json
+            output/preservation-audit.log
+            output/signature.txt
+            work/localization.log
+            work/package-audit.log
+            work/apktool-version.txt
+
+
+  android-runtime-smoke:
+    needs: build-and-audit
+    if: success()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout runtime smoke helper
+        uses: actions/checkout@v4
+      - name: Download statically verified test APK
+        uses: actions/download-artifact@v4
+        with:
+          name: MiHealth_RU_RESOURCE_ONLY_TEST
+          path: artifact
+      - name: Install and launch on Android 15 emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -camera-back none
+          script: |
+            bash ./patch/runtime_smoke.sh "$GITHUB_WORKSPACE/artifact/MiHealth_RU_RESOURCE_ONLY_TEST.apk"
+      - name: Upload runtime diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiHealth_RU_RESOURCE_ONLY_RUNTIME_DIAGNOSTICS
+          if-no-files-found: warn
+          path: runtime-report/
