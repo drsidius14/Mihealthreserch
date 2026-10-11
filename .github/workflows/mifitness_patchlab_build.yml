@@ -1,13 +1,13 @@
-name: PatchLab - build Mi Fitness 3.59.1 Binder patch
+name: PatchLab - build and deep-test Mi Fitness 3.59.1
 
 on:
   push:
-    branches:
-      - mifitness-patchlab-clean
+    branches: [mifitness-patchlab-clean]
     paths:
       - .github/workflows/mifitness_patchlab_build.yml
       - patchlab/tools/apply_binder_allowlist_patch.py
       - patchlab/tools/verify_binder_allowlist_patch.py
+      - patchlab/tests/emulator_ui_test.sh
   workflow_dispatch:
 
 permissions:
@@ -23,7 +23,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: mifitness-patchlab-clean
-
       - name: Reassemble and verify original Mi Fitness APK
         shell: bash
         run: |
@@ -32,97 +31,56 @@ jobs:
           mkdir -p patchlab/input patchlab/work patchlab/output patchlab/report
           shopt -s nullglob
           parts=(patchlab/input-parts/mi_fitness_3.59.1.part-*)
-          if [ "${#parts[@]}" -ne 10 ]; then
-            echo "ERROR: expected 10 APK parts, found ${#parts[@]}" | tee patchlab/report/STATUS.txt
-            exit 1
-          fi
+          if [ "${#parts[@]}" -ne 10 ]; then echo "ERROR: expected 10 APK parts, found ${#parts[@]}" | tee patchlab/report/STATUS.txt; exit 1; fi
           cat "${parts[@]}" > patchlab/input/com.mi.health_3.59.1.apk
           echo '46100649d47000e8886d94cfbb34c18706e492a5d3aaa7f34cd4785841ffc254  patchlab/input/com.mi.health_3.59.1.apk' | sha256sum -c -
           sha256sum patchlab/input/com.mi.health_3.59.1.apk | tee patchlab/report/input-sha256.txt
           test -s patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk
-
-      - name: Install existing APK tools
-        shell: bash
+      - name: Install APK tools
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y apktool unzip
-
       - name: Install Android SDK tools
         uses: android-actions/setup-android@v4
-
       - name: Install Android build-tools
-        shell: bash
         run: |
           set -euo pipefail
           sdkmanager --install "build-tools;35.0.0"
           echo "$ANDROID_HOME/build-tools/35.0.0" >> "$GITHUB_PATH"
-
       - name: Verify separate Mi Health reference APK signer
-        shell: bash
         run: |
           set -euo pipefail
           apksigner verify --print-certs patchlab/input/XiaomiHealthResearch_1.4.6_RU_V17_03.apk | tee patchlab/report/research-certificate.txt
           tr -d ':' < patchlab/report/research-certificate.txt | tr '[:upper:]' '[:lower:]' | grep -q '86666fd4c4ef99a2edba2a50595dc223d0f42b11'
-
       - name: Decode Mi Fitness without decoding resources and apply Binder patch
-        shell: bash
         run: |
           set -euo pipefail
-          # Patch changes only smali allowlists; resource decoding caused the observed failure.
           apktool d -f -r patchlab/input/com.mi.health_3.59.1.apk -o patchlab/work/mi_fitness
-          python3 patchlab/tools/apply_binder_allowlist_patch.py \
-            --decoded-root patchlab/work/mi_fitness \
-            --report patchlab/report/PATCH-REPORT.txt
+          python3 patchlab/tools/apply_binder_allowlist_patch.py --decoded-root patchlab/work/mi_fitness --report patchlab/report/PATCH-REPORT.txt
           test -s patchlab/report/PATCH-REPORT.txt
-
       - name: Rebuild and verify patched Mi Fitness
-        shell: bash
         run: |
           set -euo pipefail
           apktool b patchlab/work/mi_fitness -o patchlab/work/mi_fitness-unsigned.apk
           test -s patchlab/work/mi_fitness-unsigned.apk
           zipalign -p -f 4 patchlab/work/mi_fitness-unsigned.apk patchlab/work/mi_fitness-aligned.apk
-          test -s patchlab/work/mi_fitness-aligned.apk
-
-          # Resource table must remain byte-for-byte unchanged.
           unzip -p patchlab/input/com.mi.health_3.59.1.apk resources.arsc | sha256sum | awk '{print $1}' > patchlab/report/source-resources-arsc.sha256
           unzip -p patchlab/work/mi_fitness-aligned.apk resources.arsc | sha256sum | awk '{print $1}' > patchlab/report/output-resources-arsc.sha256
           diff -u patchlab/report/source-resources-arsc.sha256 patchlab/report/output-resources-arsc.sha256
-
           apktool d -f -r patchlab/work/mi_fitness-aligned.apk -o patchlab/work/verify-decoded
-          python3 patchlab/tools/verify_binder_allowlist_patch.py \
-            --decoded-root patchlab/work/verify-decoded \
-            --report patchlab/report/DEX-VALIDATION.txt
+          python3 patchlab/tools/verify_binder_allowlist_patch.py --decoded-root patchlab/work/verify-decoded --report patchlab/report/DEX-VALIDATION.txt
           test -s patchlab/report/DEX-VALIDATION.txt
-
       - name: Sign test APK and verify signature
-        shell: bash
         run: |
           set -euo pipefail
-          keytool -genkeypair -noprompt -keystore patchlab/work/patchlab-test.jks \
-            -storepass patchlab-temp-pass -keypass patchlab-temp-pass -alias patchlab-test \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Mi Fitness Binder Patch Test,O=PatchLab,C=RU"
-          apksigner sign --ks patchlab/work/patchlab-test.jks --ks-key-alias patchlab-test \
-            --ks-pass pass:patchlab-temp-pass --key-pass pass:patchlab-temp-pass \
-            --out patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk \
-            patchlab/work/mi_fitness-aligned.apk
-          apksigner verify --verbose --print-certs patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk \
-            | tee patchlab/report/output-signature-verification.txt
-          sha256sum patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk \
-            | tee patchlab/report/output-sha256.txt
-          printf '%s\n' \
-            'STATUS=BUILD_AND_DEX_CHECKS_PASSED' \
-            'TARGET=Mi Fitness 3.59.1' \
-            'PATCH=Binder signature allowlists only' \
-            'RESOURCE_TABLE=resources.arsc SHA-256 checked against original' \
-            'SIGNING=temporary test key; not the original Xiaomi signer' \
-            'INSTALL_NOTE=will not update an official-signed Mi Fitness install in place' \
-            > patchlab/report/STATUS.txt
+          keytool -genkeypair -noprompt -keystore patchlab/work/patchlab-test.jks -storepass patchlab-temp-pass -keypass patchlab-temp-pass -alias patchlab-test -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Mi Fitness Binder Patch Test,O=PatchLab,C=RU"
+          apksigner sign --ks patchlab/work/patchlab-test.jks --ks-key-alias patchlab-test --ks-pass pass:patchlab-temp-pass --key-pass pass:patchlab-temp-pass --out patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk patchlab/work/mi_fitness-aligned.apk
+          apksigner verify --verbose --print-certs patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk | tee patchlab/report/output-signature-verification.txt
+          sha256sum patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk | tee patchlab/report/output-sha256.txt
+          printf '%s\n' 'STATUS=BUILD_AND_DEX_CHECKS_PASSED' 'TARGET=Mi Fitness 3.59.1' 'PATCH=Binder signature allowlists only' 'RESOURCE_TABLE=resources.arsc SHA-256 checked against original' 'SIGNING=temporary test key; not the original Xiaomi signer' 'INSTALL_NOTE=will not update an official-signed Mi Fitness install in place' > patchlab/report/STATUS.txt
           test -s patchlab/output/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk
-
-      - name: Upload patched APK and validation report
+      - name: Upload patched APK and build reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -130,5 +88,50 @@ jobs:
           path: |
             patchlab/output/*
             patchlab/report/*
+          if-no-files-found: warn
+          retention-days: 30
+
+  emulator-test:
+    needs: build
+    if: always() && needs.build.result == 'success' && github.ref == 'refs/heads/mifitness-patchlab-clean'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout test harness
+        uses: actions/checkout@v4
+        with:
+          ref: mifitness-patchlab-clean
+      - name: Download APK from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: MiFitness-3.59.1-BinderPatch
+          path: artifacts
+      - name: Confirm APK and tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="artifacts/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk"
+          test -s "$APK"
+          sudo apt-get update
+          sudo apt-get install -y aapt apksigner
+          apksigner verify --verbose "$APK"
+          aapt dump badging "$APK" | tee artifacts/aapt-badging.txt
+          grep -q '^package:' artifacts/aapt-badging.txt
+      - name: Run deep UI tests on Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          disable-animations: true
+          script: bash patchlab/tests/emulator_ui_test.sh "$GITHUB_WORKSPACE/artifacts/MiFitness_3.59.1_BinderPatch_TESTSIGNED.apk" "$GITHUB_WORKSPACE/artifacts/emulator-report"
+      - name: Upload emulator test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiFitness-3.59.1-Emulator-Deep-Test
+          path: artifacts/emulator-report/
           if-no-files-found: warn
           retention-days: 30
