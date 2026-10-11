@@ -1,0 +1,12 @@
+ПРОЕКТ: MeHealth PatchLab
+
+1) Скачай MeHealth_PatchLab_Project.zip в Download.
+2) Выполни в Termux одной командой:
+
+cd ~/Mihealthreserch && test -z "$(git status --porcelain)" || { echo 'Рабочее дерево не чистое — сначала сохрани изменения'; exit 1; }; git fetch origin main && git checkout main && git pull --ff-only origin main && git checkout -b mehealth-patchlab && unzip -o "$HOME/storage/downloads/MeHealth_PatchLab_Project.zip" -d . && git add .gitignore mehealth-patchlab && git commit -m "Add isolated MeHealth PatchLab project scaffold" && git push -u origin mehealth-patchlab
+
+Важно:
+- Команда намеренно останавливается, если рабочее дерево не чистое.
+- Создаётся отдельная ветка mehealth-patchlab от main; существующие ветки сборок не изменяются.
+- APK в репозиторий не добавляется.
+- Если ветка уже существует, не повторяй команду вслепую: сначала проверь состояние Git.

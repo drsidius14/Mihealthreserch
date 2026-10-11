@@ -1,0 +1,16 @@
+# Proprietary binaries and build outputs
+*.apk
+*.aab
+*.apks
+*.dex
+*.odex
+*.vdex
+*.class
+/build/
+/dist/
+/out/
+/tmp/
+*.jks
+*.keystore
+local.properties
+.env
